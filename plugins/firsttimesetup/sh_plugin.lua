@@ -118,6 +118,29 @@ if SERVER then
 		return str
 	end
 
+	-- Mesmo formato usado em self.map_presets[map].entities, pra dar pra
+	-- colar o resultado do dump direto de volta no preset do mapa.
+	PLUGIN.FormatGenericEntity = function(data)
+		local str = "    {\n"
+		str = str.."      class = \""..data.class.."\",\n"
+		str = str.."      position = Vector("..data.position.x..","..data.position.y..","..data.position.z.."),\n"
+		str = str.."      angles = Angle("..data.angles.x..","..data.angles.y..","..data.angles.z.."),\n"
+		str = str.."    },\n"
+
+		return str
+	end
+
+	-- Mesmo formato usado em self.map_presets[map].vendors.
+	PLUGIN.FormatVendor = function(data)
+		local str = "    {\n"
+		str = str.."      template = \""..data.template.."\",\n"
+		str = str.."      position = Vector("..data.position.x..","..data.position.y..","..data.position.z.."),\n"
+		str = str.."      angles = Angle("..data.angles.x..","..data.angles.y..","..data.angles.z.."),\n"
+		str = str.."    },\n"
+
+		return str
+	end
+
 	function PLUGIN:RunFirstTimeSetup()
 		-- Spawn containers
 		for _, containerdata in pairs(self.map_presets[game.GetMap()].containers) do
@@ -181,7 +204,17 @@ if SERVER then
 	end
 
 	function PLUGIN:SpawnVendor(vendordata)
-		ix.util.SpawnAdvVendor(vendordata.template, vendordata.position, vendordata.angles)
+		local vendorEnt = ix.util.SpawnAdvVendor(vendordata.template, vendordata.position, vendordata.angles)
+
+		-- Mesma lógica do SpawnEntity: marcamos a entidade (se
+		-- ix.util.SpawnAdvVendor de fato retornar uma) pra achá-la depois.
+		-- Guardamos o "template" junto porque não dá pra reconstruir esse
+		-- dado só olhando pra entidade.
+		if (IsValid(vendorEnt)) then
+			vendorEnt.ixFTSVendorTemplate = vendordata.template
+		end
+
+		return vendorEnt
 	end
 
 	function PLUGIN:SpawnEntity(entitydata)
@@ -196,6 +229,15 @@ if SERVER then
 			physObject:Sleep()
 			physObject:EnableMotion(false)
 		end
+
+		-- Marca a entidade para conseguirmos achá-la de novo com
+		-- FTSDumpEntitiesAndVendors. Esse flag só existe em memória: se o
+		-- servidor reiniciar antes de você rodar o dump, a marcação some
+		-- (mesmo que a entidade em si continue lá, se outro sistema estiver
+		-- persistindo ela).
+		ent.ixFTSGenericEntity = true
+
+		return ent
 	end
 
 	function PLUGIN:SaveData()
@@ -267,7 +309,7 @@ ix.command.Add("FTSShowContainerSpawns", {
 	OnRun = function(self, client, override)
 		if SERVER then
 			local containers = {}
-			for k, v in pairs( ix.plugin.list["firsttimesetup"].map_presets["rp_marsh_cs"].containers ) do
+			for k, v in pairs( ix.plugin.list["firsttimesetup"].map_presets["stalkercotz_1"].containers ) do
 				table.insert(containers, v.position)
 			end
 
@@ -303,6 +345,62 @@ ix.command.Add("FTSDumpCyclicContainerData", {
 					data.cyclicalCategory = v:GetCyclicalCategory()
 					file.Append(filename, ix.plugin.list["firsttimesetup"].FormatCyclicContainers(data))
 				end
+			end
+		end
+	end
+})
+
+ix.command.Add("FTSDumpEntitiesAndVendors", {
+	adminOnly = true,
+	OnRun = function(self, client)
+		if SERVER then
+			file.CreateDir("FTSDump")
+
+			-- Entidades genéricas (marcadas em PLUGIN:SpawnEntity)
+			local entFilename = "FTSDump/entities.txt"
+
+			if (file.Exists(entFilename, "DATA")) then
+				file.Delete(entFilename)
+			end
+			file.Write(entFilename, "entities\n")
+
+			local entCount = 0
+			for _, ent in ipairs(ents.GetAll()) do
+				if (IsValid(ent) and ent.ixFTSGenericEntity) then
+					local data = {}
+					data.class = ent:GetClass()
+					data.position = ent:GetPos()
+					data.angles = ent:GetAngles()
+					file.Append(entFilename, ix.plugin.list["firsttimesetup"].FormatGenericEntity(data))
+					entCount = entCount + 1
+				end
+			end
+
+			-- Vendors (marcados em PLUGIN:SpawnVendor)
+			local vendorFilename = "FTSDump/vendors.txt"
+
+			if (file.Exists(vendorFilename, "DATA")) then
+				file.Delete(vendorFilename)
+			end
+			file.Write(vendorFilename, "vendors\n")
+
+			local vendorCount = 0
+			for _, ent in ipairs(ents.GetAll()) do
+				if (IsValid(ent) and ent.ixFTSVendorTemplate) then
+					local data = {}
+					data.template = ent.ixFTSVendorTemplate
+					data.position = ent:GetPos()
+					data.angles = ent:GetAngles()
+					file.Append(vendorFilename, ix.plugin.list["firsttimesetup"].FormatVendor(data))
+					vendorCount = vendorCount + 1
+				end
+			end
+
+			client:Notify(entCount .. " entidades e " .. vendorCount .. " vendors salvos em FTSDump/.")
+
+			if (vendorCount == 0) then
+				client:Notify("Nenhum vendor marcado foi encontrado. Mire em um vendor e use " ..
+					"/FTSGetEntityVars para ver a classe real dele (aparece no console) e me avise.")
 			end
 		end
 	end
