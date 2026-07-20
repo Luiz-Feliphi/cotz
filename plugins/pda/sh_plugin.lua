@@ -34,6 +34,53 @@ ix.config.Add("pdaWiringMaximumTransactionLimit", 10000, "The maximum amount of 
 	category = "PDA Wiring"
 })
 
+ix.config.Add("pdaLocalRange", 450, "The distance (in units) that /lpda (local ooc) messages can be heard within, similar to /looc.", nil, {
+	data = {min = 0, max = 4000},
+	category = "PDA Chat"
+})
+
+--[[
+	Helpers to check whether a player currently owns/has equipped a PDA-type item.
+	These look directly at the item's own "equip" data (set by ITEM.functions.Equip/EquipUn)
+	instead of trusting a mirrored flag on the character, so they stay accurate even if an
+	equipped PDA is dropped, traded, or otherwise removed from the inventory.
+]]
+local function ixPDAGetEquipped(client)
+	local char = IsValid(client) and client:GetCharacter()
+
+	if (!char) then return nil end
+
+	local inv = char:GetInventory()
+
+	if (!inv) then return nil end
+
+	for _, item in pairs(inv:GetItems()) do
+		if (item.isPDA and item:GetData("equip")) then
+			return item
+		end
+	end
+
+	return nil
+end -- função que verifica se o jogador tem um PDA equipado, mesmo que esteja no inventário.
+
+local function ixPDAHasInInventory(client)
+	local char = IsValid(client) and client:GetCharacter()
+
+	if (!char) then return false end
+
+	local inv = char:GetInventory()
+
+	if (!inv) then return false end
+
+	for _, item in pairs(inv:GetItems()) do
+		if (item.isPDA) then
+			return true
+		end
+	end
+
+	return false
+end -- função que verifica se o jogador tem um PDA no inventário, mesmo que não esteja equipado.
+
 --removal of helix chats we dont use
 hook.Add("InitializedChatClasses", "ixChatRemoval2", function()
 	ix.chat.classes["ooc"] = nil
@@ -41,14 +88,51 @@ hook.Add("InitializedChatClasses", "ixChatRemoval2", function()
 
 	ix.chat.Register("ooc", {
 		CanSay = function(self, speaker, text)
+			-- Anyone can use // or /OOC, even without a PDA equipped - it just won't show their PDA identity.
 			return true
 		end,
 		OnChatAdd = function(self, speaker, text, bAnonymous, data)
-			chat.AddText(Color(0,191,255), "[LPDA-"..speaker:GetCharacter():GetData("pdanickname", speaker:GetCharacter():GetName()).."] ", Material(speaker:GetCharacter():GetPdaavatar()), color_white, ": "..text)
+			local character = speaker:GetCharacter()
+			local pdaItem = ixPDAGetEquipped(speaker)
+
+			local displayName = pdaItem and character:GetData("pdanickname", character:GetName()) or character:GetName()
+			local avatarPath = pdaItem and character:GetPdaavatar() or "vgui/icons/face_31.png"
+
+			chat.AddText(Color(0,191,255), "[OOC-"..displayName.."] ", Material(avatarPath), color_white, ": "..text)
 		end,
-		prefix = {"//", "/OOC", "/lpda"},
-		description = "Send a message over the local PDA network",
+		prefix = {"//", "/OOC"},
+		description = "Send an out-of-character message to everyone on the server",
 		CanHear = function(self, speaker, listener)
+			-- Global, like normal OOC - no distance check.
+			listener:EmitSound( "stalkersound/da-2_beep1.ogg", 90, 100, 1, CHAN_AUTO )
+			return true
+		end,
+	})
+
+	ix.chat.Register("looc", {
+		CanSay = function(self, speaker, text)
+			-- Anyone can use /looc or /lpda, even without a PDA equipped - it just won't show their PDA identity.
+			return true
+		end,
+		OnChatAdd = function(self, speaker, text, bAnonymous, data)
+			local character = speaker:GetCharacter()
+			local pdaItem = ixPDAGetEquipped(speaker)
+
+			--local displayName = pdaItem and character:GetData("pdanickname", character:GetName()) or character:GetName()
+			local avatarPath = pdaItem and character:GetPdaavatar() or "vgui/icons/face_31.png" -- avatar que OUT DATA vai mostrar no chat, caso o jogador não tenha um PDA equipado, ele vai mostrar o avatar padrão.
+
+			chat.AddText(Color(0,191,255), "[LOOC-"..speaker:GetCharacter():GetName().."] ", Material(avatarPath), color_white, ": "..text)
+		end,
+		prefix = {"/looc", "/lpda"},
+		description = "Send a local out-of-character message to nearby players",
+		CanHear = function(self, speaker, listener)
+			if (!IsValid(speaker) or !IsValid(listener)) then return false end
+
+			-- Works like /looc: only players within range can see/hear it. Does NOT require a PDA.
+			if (speaker:GetPos():DistToSqr(listener:GetPos()) > (ix.config.Get("pdaLocalRange", 450) ^ 2)) then
+				return false
+			end
+
 			listener:EmitSound( "stalkersound/da-2_beep1.ogg", 90, 100, 1, CHAN_AUTO )
 			return true
 		end,
@@ -61,7 +145,6 @@ hook.Add("InitializedChatClasses", "ixChatRemoval2", function()
 
 		OnChatAdd = function(self, speaker, text, bAnonymous, data)
 			chat.AddText(self.color, "[PPDA-"..speaker:GetCharacter():GetData("pdanickname", speaker:GetCharacter():GetName()).."] ", " ", Material(speaker:GetCharacter():GetPdaavatar()), color_white, " TO  ", self.color, "[PPDA-"..data.target:GetCharacter():GetData("pdanickname", data.target:GetCharacter():GetName()).." ] ", " ", Material(data.target:GetCharacter():GetPdaavatar()), color_white, "\nMESSAGE : ", text)
-
 			surface.PlaySound("stalkersound/pda/pda.wav")
 		end
 	})
@@ -87,6 +170,9 @@ ix.command.Add("gpda", {
 		ix.type.text
 	},
 	OnRun = function(self, client, message)
+		if (!ixPDAHasInInventory(client)) then return client:Notify("[STALKERNET] Você precisa de um PDA para usar este canal.") end
+		if (!ixPDAGetEquipped(client)) then return client:Notify("[STALKERNET] Você precisa colocar o PDA no cinto (\"Attach to Belt\") para usar este canal.") end
+
 		ix.chat.Send(client, "gpda", message)
 
 		ix.crossserverchat.PostMessage(nil, client:GetName(), message, client:GetCharacter() and client:GetCharacter():GetPdaavatar() or "vgui/icons/face_31.png")
@@ -105,6 +191,9 @@ function PLUGIN:InitializedPlugins()
 		},
 		alias = {"PM", "pmpda"},
 		OnRun = function(self, client, target, message)
+			if (!ixPDAHasInInventory(client)) then return client:Notify("[STALKERNET] Você precisa de um PDA para usar este canal.") end
+			if (!ixPDAGetEquipped(client)) then return client:Notify("[STALKERNET] Você precisa colocar o PDA no cinto (\"Attach to Belt\") para usar este canal.") end
+
 			if ((client.ixNextPM or 0) < CurTime()) then
 				ix.chat.Send(client, "pm", message, false, {client, target}, {target = target})
 
