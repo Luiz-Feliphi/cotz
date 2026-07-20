@@ -9,6 +9,8 @@ ITEM.weight = 0.310
 ITEM.isHeadLamp = true
 
 ITEM.img = ix.util.GetMaterial("cotz/ui/icons/misc_headlamp.png")
+ITEM.category = "Miscellaneous"
+ITEM.class = "flashlight_headlamp"
 ITEM.equipIcon = ix.util.GetMaterial("materials/vgui/ui/stalker/misc/equip.png")
 
 

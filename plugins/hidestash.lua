@@ -95,15 +95,18 @@ function PLUGIN:StashUnhide(client)
 	end)
 end
 
-ix.command.Add("stashhide", {
-	adminOnly = true,
-	OnRun = function(self, client)
-		PLUGIN:StashHide(client)
-	end,
-})
+-- "stashhide" foi removido: chamava PLUGIN:StashHide, uma função que já
+-- estava comentada/desativada neste arquivo (ficaria só dando erro).
+-- O fluxo atual de esconder um stash acontece via os itens tipo "Lost Note"
+-- (hidestashspawner/items/miscellaneous/sh_hidestash_*.lua), que chamam
+-- PLUGIN:SpawnStash diretamente.
 
+-- IMPORTANTE: "stashunhide" precisa ficar liberado para jogadores comuns,
+-- pois é o comando que eles usam para recuperar o loot que esconderam.
+-- A checagem de dono já é feita dentro de StashUnhide (v[5] == charid),
+-- então não precisa (e não deve) ser adminOnly.
 ix.command.Add("stashunhide", {
-	adminOnly = true,
+	--adminOnly = true,
 	OnRun = function(self, client)
 		PLUGIN:StashUnhide(client)
 	end
