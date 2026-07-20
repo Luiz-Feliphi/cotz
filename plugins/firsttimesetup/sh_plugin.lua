@@ -7,6 +7,7 @@ PLUGIN.map_presets = {}
 ix.util.Include("sh_rp_marsh_cs.lua")
 ix.util.Include("sh_rp_pripyat_remaster.lua")
 ix.util.Include("sh_rp_waystation.lua")
+ix.util.Include("sh_stalkercotz_1.lua")
 
 if SERVER then
 
@@ -311,7 +312,7 @@ ix.command.Add("FTSDumpPluginData", {
 	adminOnly = true,
 	OnRun = function(self, client, override)
 		if SERVER then
-
+				--esse codigo vai salvar todos os dados de plugin em arquivos txt separados, dentro da pasta "FTSDump"
 			file.CreateDir("FTSDump")
 
 			for pluginid, func in pairs(ix.plugin.list["firsttimesetup"].PluginDataGetFunctions) do

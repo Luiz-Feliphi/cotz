@@ -10,6 +10,19 @@ function PLUGIN:EntityKeyValue(ent, key, value)
         end
     end
 
+    if game.GetMap() == "stalkercotz_1" then
+        -- fixes the elevator button not resetting after being pressed once
+        if IsValid(ent) and ent:GetClass() == "func_button" and ent:GetName() == "button_down" then
+            ent:SetKeyValue("wait", 5)
+        end
+        if IsValid(ent) and ent:GetClass() == "func_button" and ent:GetName() == "button_up" then
+            ent:SetKeyValue("wait", 5)
+        end
+        if IsValid(ent) and ent:MapCreationID() == 1550 then
+            ent:SetKeyValue("spawnflags", 33) -- disables UseActivates flag
+        end
+    end
+
     if game.GetMap() == "rp_marsh_cs" then
         -- locks the underground bunker door, openable with accesscard_bunker
         if IsValid(ent) and ent:MapCreationID() == 1402 then

@@ -71,7 +71,8 @@ vgui.Register("ixStalkerButton", PANEL, "DImageButton")
 local PANEL = {}
 
 function PANEL:Init()
-	self:SetSize(400, 560)
+	local scrW, scrH = ScrW(), ScrH()
+	self:SetSize(scrW * (400 / 1920), scrH * (560 / 1080))
 	self:Dock(FILL)
 
 	ix.gui.menuInventoryContainer = self
@@ -107,6 +108,7 @@ function PANEL:Init()
 	self:SetSizable(false)
 	self:SetTitle("")
 	self.thinkdelay = 0
+	local scrW, scrH = ScrW(), ScrH()
 
 	ix.gui.menuInventoryFrame = self
 
@@ -140,9 +142,9 @@ function PANEL:Init()
 
 	self.money = self:Add("DLabel")
 	self.money:SetFont("stalkerregularfont3")
-	self.money:SetPos(24, 66)
+	self.money:SetPos(scrW * (24 / 1920), scrH * (66 / 1080))
 	self.money:SetWide(180)
-	self.money:SetContentAlignment(6)
+	self.money:SetContentAlignment(4)
 	self.money:SetText(ix.currency.Get(LocalPlayer():GetCharacter():GetMoney()))
 
 
@@ -150,9 +152,9 @@ function PANEL:Init()
 	local maxWeight = ix.config.Get("maxWeight", 30)
 	self.weight = self:Add("DLabel")
 	self.weight:SetFont("stalkerregularfont3")
-	self.weight:SetPos(200, 633)
+	self.weight:SetPos(scrW * (250 / 1920), scrH * (633 / 1080))
 	self.weight:SetWide(155)
-	self.weight:SetContentAlignment(6)
+	self.weight:SetContentAlignment(4)	
 	if (ix.option.Get("imperial", false)) then
 		self.weight:SetText(math.Round(carry * 2.20462, 2).." lbs / "..math.Round(maxWeight * 2.20462, 2).." lbs")
 	else
@@ -160,9 +162,10 @@ function PANEL:Init()
 	end
 	
 	self.charbackgroundicon = self:Add("DImage")
-	self.charbackgroundicon:SetSize(138, 76)
-	self.charbackgroundicon:SetPos(230, 13)
+	self.charbackgroundicon:SetSize(122, 76)
+	self.charbackgroundicon:SetPos(scrW * (200 / 1920), scrH * (13 / 1080))
 	self.charbackgroundicon:SetZPos(-1)
+	self.charbackgroundicon:SetContentAlignment(4)
 
 	if LocalPlayer():GetCharacter():GetPdaavatar() then 
 		self.charbackgroundicon:SetImage( LocalPlayer():GetCharacter():GetPdaavatar() )

@@ -458,8 +458,13 @@ function PANEL:SetInventory(inventory, bFitParent)
 		else
 			self:SetSize(self.iconSize, self.iconSize)
 		end
-
-		self:SetGridSize(invWidth, invHeight)
+		/*
+			SetGridSize ele vai por a largura total do pai que é o inv1, e a altura vai ser 100, isso é só pra ele criar as slots, mas não vai ser
+			usado pra nada, pq o tamanho real do inv é definido pelo SetSize que é chamado no FitParent
+			mas por algum motivo não está funcionando o FitParent e eu não sei como arrumar por enquanto mas precisamos passar ao SetGridSize
+			a altura total do inv, de uma forma automatica 
+		*/
+		self:SetGridSize(invWidth, 100) -- ISSO PRECISA SER ARRUMADO O QUANTO ANTES
 
 		for x, items in pairs(inventory.slots) do
 			for y, data in pairs(items) do
