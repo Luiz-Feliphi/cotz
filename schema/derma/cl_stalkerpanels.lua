@@ -86,7 +86,6 @@ function PANEL:Init()
 	panel.childPanels = {}
 
 	local inventory = LocalPlayer():GetCharacter():GetInventory()
-
 	if (inventory) then
 		panel:SetInventory(inventory)
 	end
@@ -209,4 +208,3 @@ function PANEL:Paint(w, h)
 end
 
 vgui.Register("ixStalkerInventoryPanel", PANEL, "DFrame")
-

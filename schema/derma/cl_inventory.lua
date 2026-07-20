@@ -400,7 +400,7 @@ end
 
 function PANEL:FitParent(invWidth, invHeight)
 	local parent = self:GetParent()
-
+	
 	if (!IsValid(parent)) then
 		return
 	end
