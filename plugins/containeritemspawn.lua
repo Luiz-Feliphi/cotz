@@ -1,3 +1,4 @@
+local PLUGIN = PLUGIN
 PLUGIN.name = "Container Item Spawner"
 PLUGIN.author = "gumlefar"
 PLUGIN.desc = "Spawns items in containers."
@@ -30,11 +31,7 @@ ix.config.Add("containerSpawnMaxItemsPerRun", 10, "How many items the spawner wi
 if SERVER then
 	local spawntime = 1
 
-	function PLUGIN:Think()
-		if spawntime > CurTime() then return end
-
-		spawntime = CurTime() + ix.config.Get("containerSpawnRate", 900) + math.random(ix.config.Get("containerSpawnRate", 900)/2)
-
+	function PLUGIN:SpawnContainerItems()
 		local spawncnt = 0
 
 		for k, v in pairs( ents.FindByClass( "ix_container" ) ) do
@@ -43,6 +40,12 @@ if SERVER then
 				if math.random(101) <= ix.config.Get("containerSpawnChanceFlat", 1) + (ix.config.Get("containerSpawnChanceScaling", 0.5) * player.GetCount()) then
 					local idat = ix.util.GetRandomItemFromPool(v:GetSpawnCategory())
 
+					-- Se a categoria não existir como pool registrada,
+					-- GetRandomItemFromPool não retorna nada -- sem essa
+					-- checagem, isso quebrava o loop inteiro (e os
+					-- containers seguintes nem chegavam a ser sorteados).
+					if not idat then continue end
+
 					if ix.item.inventories[v:GetID()]:GetItemCountNonSpecific(true) < ix.config.Get("containerSpawnMaxItems", 1) then
 						v:GetInventory():Add(idat[1], 1, idat[2] or {})
 						spawncnt = spawncnt + 1
@@ -50,6 +53,16 @@ if SERVER then
 				end
 			end
 		end
+
+		return spawncnt
+	end
+
+	function PLUGIN:Think()
+		if spawntime > CurTime() then return end
+
+		spawntime = CurTime() + ix.config.Get("containerSpawnRate", 900) + math.random(ix.config.Get("containerSpawnRate", 900)/2)
+
+		self:SpawnContainerItems()
 	end
 end
 
@@ -86,6 +99,38 @@ ix.command.Add("containerspawnremove", {
 			client:Notify("Storage will no longer spawn items")
 		else
 			client:NotifyLocalized("invalid", "Entity")
+		end
+	end
+})
+
+ix.command.Add("containerspawnforce", {
+	adminOnly = true,
+	OnRun = function(self, client)
+		if SERVER then
+			local trace = client:GetEyeTraceNoCursor()
+			local ent = trace.Entity
+
+			if not (ent and ent:IsValid() and ent:GetClass() == "ix_container") then
+				client:NotifyLocalized("invalid", "Entity")
+				return
+			end
+
+			local category = ent:GetSpawnCategory()
+
+			if not category or category == "" then
+				client:Notify("Esse container não tem grupo de loot definido. Use /containerspawnadd primeiro.")
+				return
+			end
+
+			local idat = ix.util.GetRandomItemFromPool(category)
+
+			if not idat then
+				client:Notify("O grupo '" .. category .. "' não existe como pool de itens registrada.")
+				return
+			end
+
+			ent:GetInventory():Add(idat[1], 1, idat[2] or {})
+			client:Notify("Item adicionado ao container na mira (grupo: " .. category .. ").")
 		end
 	end
 })

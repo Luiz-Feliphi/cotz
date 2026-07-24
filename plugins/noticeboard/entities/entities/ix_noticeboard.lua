@@ -26,38 +26,37 @@ if (SERVER) then
 
     function ENT:AddProps()
         local Up = 2
-        local note1 = ents.Create("prop_dynamic")
-        note1:SetPos(self:GetPos() + Vector(30, -10, 0) + self:GetUp() * Up)
-        note1:SetAngles(Angle(180, -90, 0))
-        note1:SetModel("models/lostsignalproject/items/quest/notes_letter_1.mdl")
-        note1:SetCollisionGroup(20)
-        note1:SetParent(self)
-        note1:Spawn()
-        note1:DeleteOnRemove(self)
-        local note2 = ents.Create("prop_dynamic")
-        note2:SetPos(self:GetPos() + Vector(10, 0, 0) + self:GetUp() * Up)
-        note2:SetAngles(Angle(180, 100, 0))
-        note2:SetModel("models/lostsignalproject/items/quest/notes_paper_2.mdl")
-        note2:SetCollisionGroup(20)
-        note2:SetParent(self)
-        note2:Spawn()
-        note2:DeleteOnRemove(self)
-        local note3 = ents.Create("prop_dynamic")
-        note3:SetPos(self:GetPos() + Vector(-15, -10, 0) + self:GetUp() * Up)
-        note3:SetAngles(Angle(180, 50, 0))
-        note3:SetModel("models/lostsignalproject/items/quest/notes_paper_1.mdl")
-        note3:SetCollisionGroup(20)
-        note3:SetParent(self)
-        note3:Spawn()
-        note3:DeleteOnRemove(self)
-        local note4 = ents.Create("prop_dynamic")
-        note4:SetPos(self:GetPos() + Vector(-20, 10, 0) + self:GetUp() * Up)
-        note4:SetAngles(Angle(180, -70, 0))
-        note4:SetModel("models/lostsignalproject/items/quest/notes_photo.mdl")
-        note4:SetCollisionGroup(20)
-        note4:SetParent(self)
-        note4:Spawn()
-        note4:DeleteOnRemove(self)
+
+        -- Offsets/angles are defined LOCAL to the board (as if the board had
+        -- angle 0,0,0). We convert them to world space below using
+        -- LocalToWorld/LocalToWorldAngles so they always end up flush with
+        -- the board's actual surface, no matter how the board itself is
+        -- rotated/placed in the map.
+        local propData = {
+            {model = "models/lostsignalproject/items/quest/notes_letter_1.mdl", offset = Vector(10, 30, Up), angle = Angle(0, -10, 0)},
+            {model = "models/lostsignalproject/items/quest/notes_paper_2.mdl", offset = Vector(5, -10, Up), angle = Angle(0, 5, 0)},
+            {model = "models/lostsignalproject/items/quest/notes_paper_1.mdl", offset = Vector(-10, -30, Up), angle = Angle(0, -5, 0)},
+            {model = "models/lostsignalproject/items/quest/notes_photo.mdl", offset = Vector(-10, 20, Up), angle = Angle(0, 7, 0)},
+        }
+
+        self.props = self.props or {}
+
+        for _, data in ipairs(propData) do
+            local note = ents.Create("prop_dynamic")
+            note:SetModel(data.model)
+            note:SetPos(self:LocalToWorld(data.offset))
+            note:SetAngles(self:LocalToWorldAngles(data.angle))
+            note:Spawn()
+            note:SetCollisionGroup(COLLISION_GROUP_WORLD)
+            note:SetParent(self)
+            -- Lock the offset relative to the board now that it's parented,
+            -- so it stays put even if the board moves later.
+            note:SetLocalPos(data.offset)
+            note:SetLocalAngles(data.angle)
+            note:DeleteOnRemove(self)
+
+            self.props[#self.props + 1] = note
+        end
     end
 
 	function ENT:Use(activator)

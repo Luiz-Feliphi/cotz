@@ -6,6 +6,96 @@ PLUGIN.stashspawnpoints = PLUGIN.stashspawnpoints or {}
 
 ix.util.Include("sh_definitions.lua")
 
+-- ---------------------------------------------------------------------
+-- Spawn automático de caixinha de madeira nos pontos de stash escondido.
+-- ---------------------------------------------------------------------
+-- Mesmo padrão do boxspawner: de tempos em tempos, olha os pontos
+-- marcados com /stashspawneradd e, se a área estiver livre (sem jogador
+-- perto, sem outra caixa/item já ali), spawna uma "ix_wood_entbox" com o
+-- CustomSpawngroup = categoria que você digitou no /stashspawneradd —
+-- isso reaproveita o loot automático que a própria ix_wood_entbox já usa
+-- (ix.util.GetRandomItemFromPool(self.CustomSpawngroup or "ix_entbox_drops")).
+-- Isso é INDEPENDENTE do sistema de "Lost Note" do hidestash.lua — os
+-- dois podem coexistir sem conflito, já que usam pontos/tabelas diferentes.
+PLUGIN.boxSpawnRate = 300
+PLUGIN.boxSafeRadius = 512
+PLUGIN.boxClass = "ix_wood_entbox"
+
+ix.config.Add("hideStashBoxThreshold", 30, "Quantas caixas de stash escondido o sistema mantém no mapa ao mesmo tempo.", nil, {
+	data = {min = 0, max = 200},
+	category = "Spawning"
+})
+
+if SERVER then
+	local boxSpawnTime = 1
+
+	local function isAreaClear(position, radius)
+		for _, ent in pairs(ents.FindInSphere(position, radius)) do
+			if (ent:IsPlayer()) then
+				return false
+			end
+		end
+
+		for _, ent in pairs(ents.FindInSphere(position, 20)) do
+			if (string.find(ent:GetClass(), "entbox") or ent:GetClass() == "ix_item") then
+				return false
+			end
+		end
+
+		return true
+	end
+
+	function PLUGIN:GetNumStashBoxes()
+		local count = 0
+
+		for _, ent in ipairs(ents.FindByClass(self.boxClass)) do
+			if (IsValid(ent) and ent.ixIsHideStashBox) then
+				count = count + 1
+			end
+		end
+
+		return count
+	end
+
+	function PLUGIN:SpawnStashBoxes()
+		local map = game.GetMap()
+		local points = self.stashspawnpoints and self.stashspawnpoints[map]
+
+		if (not points) then return end
+
+		local numBoxes = self:GetNumStashBoxes()
+		local maxBoxes = ix.config.Get("hideStashBoxThreshold", 30)
+
+		for _, point in RandomPairs(points) do
+			if (numBoxes >= maxBoxes) then return end
+			if (not point) then continue end
+
+			local pos = point[1]
+			local category = point[2]
+
+			if (isAreaClear(pos, self.boxSafeRadius)) then
+				local box = ents.Create(self.boxClass)
+				box.CustomSpawngroup = category
+				box.ixIsHideStashBox = true
+				box:SetPos(pos)
+				box:Spawn()
+				box:PhysWake()
+
+				numBoxes = numBoxes + 1
+			end
+		end
+	end
+
+	function PLUGIN:Think()
+		if (boxSpawnTime > CurTime()) then return end
+		boxSpawnTime = CurTime() + self.boxSpawnRate
+
+		if (self:GetNumStashBoxes() >= ix.config.Get("hideStashBoxThreshold", 30)) then return end
+
+		self:SpawnStashBoxes()
+	end
+end
+
 if SERVER then
 	local spawntime = 1
 
@@ -148,6 +238,16 @@ ix.command.Add("stashspawnerdisplay", {
 
 			netstream.Start(client, "nut_DisplayStashSpawnPoints", data)
 			client:Notify( "Displayed all stash spawners for 10 secs." )
+		end
+	end
+})
+
+ix.command.Add("stashspawnerforce", {
+	adminOnly = true,
+	OnRun = function(self, client)
+		if SERVER then
+			PLUGIN:SpawnStashBoxes()
+			client:Notify("Spawn de caixas de stash forçado.")
 		end
 	end
 })

@@ -459,12 +459,13 @@ function PANEL:SetInventory(inventory, bFitParent)
 			self:SetSize(self.iconSize, self.iconSize)
 		end
 		/*
-			SetGridSize ele vai por a largura total do pai que é o inv1, e a altura vai ser 100, isso é só pra ele criar as slots, mas não vai ser
-			usado pra nada, pq o tamanho real do inv é definido pelo SetSize que é chamado no FitParent
-			mas por algum motivo não está funcionando o FitParent e eu não sei como arrumar por enquanto mas precisamos passar ao SetGridSize
-			a altura total do inv, de uma forma automatica 
+			Problema resolvido, pelo visto é preciso apenas inserir o codigo
+
+			ix.config.Add("inventoryHeight", 20, "How many slots in a column there is in a default inventory.", nil, { data = {min = 0, max = 100}, category = "characters"})
+
+			dentro do arquivo sh_config.lua dentro da pasta gamemode>config>sh_config.lua do helix, foi apenas um erro besta de intendimento do codigo
 		*/
-		self:SetGridSize(invWidth, 100) -- ISSO PRECISA SER ARRUMADO O QUANTO ANTES
+		self:SetGridSize(invWidth, invHeight)
 
 		for x, items in pairs(inventory.slots) do
 			for y, data in pairs(items) do

@@ -167,3 +167,46 @@ ix.command.Add("containercyclicalmakenocollide", {
 		end
 	end
 })
+
+ix.command.Add("containercyclicalforce", {
+	adminOnly = true,
+	OnRun = function(self, client)
+		if not SERVER then return end
+
+		local trace = client:GetEyeTraceNoCursor()
+		local ent = trace.Entity
+
+		if not (ent and ent:IsValid() and ent:GetClass() == "ix_container") then
+			client:NotifyLocalized("invalid", "Entity")
+			return
+		end
+
+		if ent:GetCyclicalCategory() == "" then
+			client:Notify("Esse container não tem categoria cíclica definida. Use /containercyclicaladd primeiro.")
+			return
+		end
+
+		-- Chama a mesma função que o Think usa quando é hora do container
+		-- aparecer -- sorteia loot novo na hora e mostra o container.
+		ix.plugin.list["cycliccontainer"]:AppearContainer(ent)
+		client:Notify("Container cíclico forçado a aparecer com loot novo.")
+	end
+})
+
+ix.command.Add("containercyclicalforceall", {
+	adminOnly = true,
+	OnRun = function(self, client)
+		if not SERVER then return end
+
+		local count = 0
+
+		for _, ent in ipairs(ents.FindByClass("ix_container")) do
+			if (IsValid(ent) and ent:GetCyclicalCategory() != "") then
+				ix.plugin.list["cycliccontainer"]:AppearContainer(ent)
+				count = count + 1
+			end
+		end
+
+		client:Notify(count .. " container(s) cíclico(s) forçado(s) a aparecer com loot novo.")
+	end
+})

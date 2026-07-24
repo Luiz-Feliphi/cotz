@@ -62,6 +62,17 @@ if SERVER then
 					-- end
 
 					local newNPC = ents.Create(spawn.entities[k][1])
+
+					-- Se a classe não existir no servidor (addon de mutantes
+					-- faltando, nome errado, etc), ents.Create devolve uma
+					-- entidade inválida -- sem isso aqui, o resto do código
+					-- rodava "com sucesso" sem nada aparecer, sem erro nenhum.
+					if not IsValid(newNPC) then
+						ErrorNoHalt("[EventController] Classe de NPC inválida (addon faltando?): '" ..
+							tostring(spawn.entities[k][1]) .. "'\n")
+						continue
+					end
+
 					newNPC:SetPos(position)
 					newNPC:Spawn()
 					newNPC:DropToFloor()
@@ -167,20 +178,16 @@ if SERVER then
 		if populate then
 			for i = 1, self.populateAmount do
 				local eventpoint = table.Random(self.eventpoints[game.GetMap()])
-				local spawn = table.Random(self.eventdefs)
 
-				if (!eventpoint) then
-					return
-				end
+				-- Antes, um "return" aqui saía da função inteira sem nunca
+				-- zerar "populate", deixando ele preso em true (o Think
+				-- ficava tentando de novo a cada tick, do zero). Agora só
+				-- pulamos essa tentativa e seguimos as outras.
+				if (!eventpoint) then continue end
 
-				local n = 0
-				while table.Random(spawn.difficulty) != eventpoint[3] and n<15 do
-					spawn = table.Random(self.eventdefs)
-					n = n + 1
-				end
+				local spawn = self:GetMatchingEventDef(eventpoint[3])
+				if (!spawn) then continue end
 
-				if( n == 15 ) then return end
-				
 				self:spawnEvent(eventpoint,spawn)
 			end
 			
@@ -198,14 +205,8 @@ if SERVER then
 		end
 		if( !self:IsClear(eventpoint[1]) ) then return end
 
-		local spawn = table.Random(self.eventdefs)
-		local n = 0
-		while table.Random(spawn.difficulty) != eventpoint[3] and n<15 do
-			spawn = table.Random(self.eventdefs)
-			n = n + 1
-		end
-
-		if( n == 15 ) then return end
+		local spawn = self:GetMatchingEventDef(eventpoint[3])
+		if (!spawn) then return end
 
 		self:spawnEvent(eventpoint, spawn)
 		
@@ -228,6 +229,26 @@ if SERVER then
 
 	function PLUGIN:GetNumMutants()
 		return #ents.FindByClass("npc_*")
+	end
+
+	-- Antes disso, o código escolhia um eventdef ALEATÓRIO e só depois
+	-- checava (também por sorteio) se a dificuldade batia -- então mesmo
+	-- quando existia um evento válido pra aquele ponto, podia falhar por
+	-- pura falta de sorte em até 15 tentativas. Agora filtramos direto
+	-- quais eventdefs realmente aceitam essa dificuldade e sorteamos só
+	-- entre eles.
+	function PLUGIN:GetMatchingEventDef(difficulty)
+		local candidates = {}
+
+		for _, def in pairs(self.eventdefs) do
+			if def.difficulty and table.HasValue(def.difficulty, difficulty) then
+				candidates[#candidates + 1] = def
+			end
+		end
+
+		if #candidates == 0 then return nil end
+
+		return table.Random(candidates)
 	end
 else
 	netstream.Hook("nut_DisplaySpawnPoints", function(data)
@@ -298,8 +319,41 @@ ix.command.Add("eventdisplay", {
 
 ix.command.Add("eventforce", {
 	adminOnly = true,
-	OnRun = function(client, arguments)
-		PLUGIN:setSpawnTime(1)
+	OnRun = function(self, client)
+		local points = PLUGIN.eventpoints[game.GetMap()]
+
+		if table.IsEmpty(points or {}) then
+			client:Notify("Nenhum ponto de evento neste mapa ainda. Use /eventadd primeiro.")
+			return
+		end
+
+		local eventpoint = table.Random(points)
+		if not eventpoint then
+			client:Notify("Não consegui escolher um ponto de evento.")
+			return
+		end
+
+		local spawn = PLUGIN:GetMatchingEventDef(eventpoint[3])
+
+		if not spawn then
+			client:Notify("Nenhum evento em sh_eventdefs.lua usa a dificuldade " ..
+				tostring(eventpoint[3]) .. " (ponto '" .. eventpoint[2] .. "'). Confira a dificuldade do ponto.")
+			return
+		end
+
+		client:Notify("Rodando evento no ponto '" .. eventpoint[2] .. "' (dificuldade " .. eventpoint[3] .. ")...")
+
+		local before = #ents.FindByClass("npc_*")
+		PLUGIN:spawnEvent(eventpoint, spawn)
+		local after = #ents.FindByClass("npc_*")
+
+		if after > before then
+			client:Notify((after - before) .. " NPC(s) apareceram no mapa.")
+		else
+			client:Notify("O evento rodou, mas NENHUM NPC apareceu. Provavelmente a(s) classe(s) de " ..
+				"NPC desse evento não existem nesse servidor (addon de mutantes faltando?). " ..
+				"Confira o console do servidor -- toda classe inválida agora é impressa lá.")
+		end
 	end
 })
 
@@ -307,7 +361,37 @@ ix.command.Add("eventpopulate", {
 	adminOnly = true,
 	--syntax = "<number amount>",
 	OnRun = function(self, client, arguments)
-		PLUGIN:setPopulate(true)
+		local points = PLUGIN.eventpoints[game.GetMap()]
+
+		if table.IsEmpty(points or {}) then
+			client:Notify("Nenhum ponto de evento neste mapa ainda. Use /eventadd primeiro.")
+			return
+		end
+
+		local before = #ents.FindByClass("npc_*")
+		local eventsRan = 0
+
+		for i = 1, PLUGIN.populateAmount do
+			local eventpoint = table.Random(points)
+			if not eventpoint then continue end
+
+			local spawn = PLUGIN:GetMatchingEventDef(eventpoint[3])
+			if not spawn then continue end
+
+			PLUGIN:spawnEvent(eventpoint, spawn)
+			eventsRan = eventsRan + 1
+		end
+
+		local after = #ents.FindByClass("npc_*")
+
+		client:Notify(eventsRan .. "/" .. PLUGIN.populateAmount .. " eventos rodaram, " ..
+			(after - before) .. " NPC(s) novo(s) no mapa.")
+
+		if after == before then
+			client:Notify("Nenhum NPC novo apareceu -- confira o console do servidor " ..
+				"(classes inválidas são impressas lá agora) ou se os pontos têm dificuldade " ..
+				"compatível com algum evento cadastrado.")
+		end
 		--local amount = tonumber(arguments[1]) or 5
 		--if isnumber(amount) then
 		--	PLUGIN.populateAmount = arguments[1]
