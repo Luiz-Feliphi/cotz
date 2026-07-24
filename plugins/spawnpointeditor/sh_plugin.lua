@@ -58,7 +58,7 @@ if CLIENT then
 	net.Receive("SpawnPointEditor_CopyItemID", function()
 		local uniqueID = net.ReadString()
 		SetClipboardText(uniqueID)
-		print(uniqueID)
+
 		local ply = LocalPlayer()
 		if IsValid(ply) then
 			ply:ChatPrint("[Spawn Tool] uniqueID copiado para a área de transferência: " .. uniqueID)
@@ -121,7 +121,7 @@ do
 
 	-- Ordem dos "modos" da ferramenta (equivalente às abas do painel gráfico).
 	SWEP.ModeOrder = {
-		"box", "stash", "itemspawn", "radiation", "anomaly", "event",
+		"box", "stash", "itemspawn", "radiation", "anomaly", "event", "eventadv",
 		"container", "containerspawn", "containerentity",
 	}
 
@@ -132,6 +132,7 @@ do
 		radiation = "Radiação",
 		anomaly = "Anomalias",
 		event = "Eventos",
+		eventadv = "Eventos Avançados",
 		container = "Containers Cíclicos",
 		containerspawn = "Loot em Containers",
 		containerentity = "Spawnar Container",
@@ -232,7 +233,7 @@ do
 			lbl:SetText(text)
 			lbl:SetWrap(true)
 			lbl:SetAutoStretchVertical(true)
-			lbl:SetTextColor(Color(255, 255, 255)) -- MUDA A COR DA LETRA DOS TEXTOS
+			lbl:SetTextColor(Color(160, 160, 160))
 			return lbl
 		end
 
@@ -243,6 +244,16 @@ do
 			combo:DockMargin(4, 0, 4, 2)
 			combo:SetTall(26)
 			return combo
+		end
+
+		local function Button(parent, text, callback)
+			local btn = vgui.Create("DButton", parent)
+			btn:Dock(TOP)
+			btn:DockMargin(4, 6, 4, 0)
+			btn:SetTall(28)
+			btn:SetText(text)
+			btn.DoClick = callback
+			return btn
 		end
 
 		local function TextEntry(parent, label, placeholder)
@@ -345,6 +356,10 @@ do
 
 			local radius = NumberWang(p, "Raio de remoção (botão direito)", 8, 1024, 128)
 
+			Button(p, "Forçar spawn de caixas de stash agora", function()
+				ix.command.Send("stashspawnerforce")
+			end)
+
 			modeDefs.stash = {
 				addCmd = "stashspawneradd",
 				getAddArgs = function()
@@ -420,7 +435,14 @@ do
 				addCmd = "anomalyadd",
 				getAddArgs = function()
 					if not anomPlugin then return nil end
-					return { areaRadius:GetValue(), Bitstring(anomPlugin.anomalydefs, checks) }
+					local bitstring = Bitstring(anomPlugin.anomalydefs, checks)
+
+					if not string.find(bitstring, "1") then
+						LocalPlayer():ChatPrint("[Spawn Tool] Marque pelo menos uma anomalia antes de adicionar (aperte R).")
+						return nil
+					end
+
+					return { areaRadius:GetValue(), bitstring }
 				end,
 				removeCmd = "anomalyremove",
 				getRemoveArgs = function() return { removeRadius:GetValue() } end,
@@ -431,20 +453,112 @@ do
 
 		local function BuildEventMode(sheet)
 			local p = NewTab(sheet, "Eventos", "icon16/flag_blue.png")
-			HelpText(p, "Esquerdo: adiciona a área de evento na mira. Direito: remove próximas.")
+			HelpText(p, "Esquerdo: adiciona a área de evento na mira. Direito: remove próximas. " ..
+				"A dificuldade é um código mapa+local, escolha nos dois dropdowns.")
 
 			local nameEntry = TextEntry(p, "Nome da área", "ex: Zona Norte")
-			local difficulty = NumberWang(p, "Dificuldade", 1, 10, 1)
+
+			local mapCombo = Combo(p, "Mapa")
+			mapCombo:AddChoice("1 - Marsh / Swamps", 1)
+			mapCombo:AddChoice("2 - Waystation", 2)
+			mapCombo:AddChoice("3 - Pripyat", 3)
+			mapCombo:AddChoice("4 - Stalkercotz 1", 4)
+			mapCombo:ChooseOptionID(1)
+
+			local typeCombo = Combo(p, "Tipo de local")
+			typeCombo:AddChoice("1 - Perto do spawn (natureza)", 1)
+			typeCombo:AddChoice("2 - Longe do spawn (natureza)", 2)
+			typeCombo:AddChoice("3 - Área povoada / prédio", 3)
+			typeCombo:AddChoice("4 - Ponto de sniper", 4)
+			typeCombo:AddChoice("5 - Subterrâneo", 5)
+			typeCombo:ChooseOptionID(1)
+
+			HelpText(p, "Aviso: hoje não existe evento cadastrado com dígito de mapa 4 " ..
+				"(Stalkercotz 1) -- precisa adicionar eventdefs com dificuldade 41-45.")
+
 			local radius = NumberWang(p, "Raio de remoção (botão direito)", 8, 1024, 128)
+
+			Button(p, "Forçar 1 evento agora", function()
+				ix.command.Send("eventforce")
+			end)
+
+			Button(p, "Popular eventos agora (rajada)", function()
+				ix.command.Send("eventpopulate")
+			end)
 
 			modeDefs.event = {
 				addCmd = "eventadd",
 				getAddArgs = function()
 					local name = nameEntry:GetValue()
 					if name == "" then name = "UNNAMED AREA" end
-					return { name, difficulty:GetValue() }
+
+					local _, mapDigit = mapCombo:GetSelected()
+					local _, typeDigit = typeCombo:GetSelected()
+					local difficulty = (mapDigit or 1) * 10 + (typeDigit or 1)
+
+					return { name, difficulty }
 				end,
 				removeCmd = "eventremove",
+				getRemoveArgs = function() return { radius:GetValue() } end,
+				getPreviewRemoveRadius = function() return radius:GetValue() end,
+			}
+		end
+
+		local function BuildEventAdvMode(sheet)
+			local p = NewTab(sheet, "Eventos Avançados", "icon16/flag_red.png")
+			HelpText(p, "Eventos roteirizados específicos. O nome interno precisa bater com " ..
+				"um allowedPoints já cadastrado em eventcontrolleradv/sh_eventdefs.lua.")
+
+			local advPlugin = ix.plugin.list["eventcontrolleradv"]
+			local nameEntry = TextEntry(p, "Nome de exibição", "ex: Base Abandonada")
+			local internalCombo = Combo(p, "Nome interno (allowedPoints)")
+
+			if advPlugin and advPlugin.eventdefs then
+				local seen = {}
+				local keys = {}
+
+				for _, def in pairs(advPlugin.eventdefs) do
+					if def.allowedPoints then
+						for _, pointName in ipairs(def.allowedPoints) do
+							if not seen[pointName] then
+								seen[pointName] = true
+								keys[#keys + 1] = pointName
+							end
+						end
+					end
+				end
+
+				table.sort(keys)
+
+				for _, k in ipairs(keys) do
+					internalCombo:AddChoice(k, k)
+				end
+
+				if keys[1] then internalCombo:ChooseOption(keys[1], 1) end
+			end
+
+			local radius = NumberWang(p, "Raio de remoção (botão direito)", 8, 1024, 128)
+
+			Button(p, "Forçar 1 evento avançado agora", function()
+				ix.command.Send("eventadvforce")
+			end)
+
+			Button(p, "Popular eventos avançados agora (rajada)", function()
+				ix.command.Send("eventadvpopulate")
+			end)
+
+			modeDefs.eventadv = {
+				addCmd = "eventadvadd",
+				getAddArgs = function()
+					local name = nameEntry:GetValue()
+					if name == "" then name = "UNNAMED AREA" end
+
+					local internalName = internalCombo:GetSelected()
+					if not internalName or internalName == "" then return nil end
+
+					return { name, internalName }
+				end,
+				removeCmd = "eventadvremove",
 				getRemoveArgs = function() return { radius:GetValue() } end,
 				getPreviewRemoveRadius = function() return radius:GetValue() end,
 			}
@@ -465,6 +579,14 @@ do
 				if keys[1] then categoryCombo:ChooseOption(keys[1], 1) end
 			end
 
+			Button(p, "Forçar aparecer com loot novo (mira)", function()
+				ix.command.Send("containercyclicalforce")
+			end)
+
+			Button(p, "Forçar TODOS os cíclicos do mapa", function()
+				ix.command.Send("containercyclicalforceall")
+			end)
+
 			modeDefs.container = {
 				addCmd = "containercyclicaladd",
 				getAddArgs = function()
@@ -483,6 +605,10 @@ do
 				"tem raio, é sempre no container mirado).")
 
 			local group = TextEntry(p, "Grupo de loot (pool de itens)", "ex: ix_entbox_drops")
+
+			Button(p, "Forçar item no container na mira agora", function()
+				ix.command.Send("containerspawnforce")
+			end)
 
 			modeDefs.containerspawn = {
 				addCmd = "containerspawnadd",
@@ -554,6 +680,7 @@ do
 			BuildRadiationMode(sheetPanel)
 			BuildAnomalyMode(sheetPanel)
 			BuildEventMode(sheetPanel)
+			BuildEventAdvMode(sheetPanel)
 			BuildContainerMode(sheetPanel)
 			BuildContainerSpawnMode(sheetPanel)
 			BuildContainerEntityMode(sheetPanel)

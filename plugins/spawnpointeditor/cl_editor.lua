@@ -311,6 +311,10 @@ local function BuildStashTab(sheet)
 		ix.command.Send("stashspawnerdisplay")
 	end)
 
+	Button(p, "Forçar spawn de caixas de stash agora", function()
+		ix.command.Send("stashspawnerforce")
+	end)
+
 	previewGetters[#sheet.Items] = { removeRadius = function() return radius:GetValue() end }
 end
 
@@ -378,6 +382,12 @@ local function BuildAnomalyTab(sheet)
 	Button(p, "+ Adicionar ponto na mira", function()
 		if not anomPlugin then return end
 		local bitstring = BuildBitstring(anomPlugin.anomalydefs, checks)
+
+		if not string.find(bitstring, "1") then
+			LocalPlayer():ChatPrint("[Spawn Editor] Marque pelo menos uma anomalia antes de adicionar o ponto.")
+			return
+		end
+
 		ix.command.Send("anomalyadd", radius:GetValue(), bitstring)
 	end)
 
@@ -418,15 +428,41 @@ end
 local function BuildEventTab(sheet)
 	local p = NewTabScroll(sheet, "Eventos", "icon16/flag_blue.png")
 
-	HelpText(p, "Mire no centro da área de evento, dê um nome e uma dificuldade.")
+	HelpText(p, "Mire no centro da área de evento e dê um nome. A 'dificuldade' desse " ..
+		"sistema é um código de 2 dígitos (mapa + tipo de local) que precisa bater com " ..
+		"algum evento cadastrado em sh_eventdefs.lua, então escolha nos dois campos " ..
+		"abaixo em vez de digitar um número solto.")
 
 	local nameEntry = TextEntry(p, "Nome da área", "ex: Zona Norte")
-	local difficulty = NumberWang(p, "Dificuldade", 1, 10, 1)
+
+	local mapCombo = Combo(p, "Mapa")
+	mapCombo:AddChoice("1 - Marsh / Swamps", 1)
+	mapCombo:AddChoice("2 - Waystation", 2)
+	mapCombo:AddChoice("3 - Pripyat", 3)
+	mapCombo:AddChoice("4 - Stalkercotz 1", 4)
+	mapCombo:ChooseOptionID(1)
+
+	local typeCombo = Combo(p, "Tipo de local")
+	typeCombo:AddChoice("1 - Perto do spawn (natureza)", 1)
+	typeCombo:AddChoice("2 - Longe do spawn (natureza)", 2)
+	typeCombo:AddChoice("3 - Área povoada / prédio", 3)
+	typeCombo:AddChoice("4 - Ponto de sniper", 4)
+	typeCombo:AddChoice("5 - Subterrâneo", 5)
+	typeCombo:ChooseOptionID(1)
+
+	HelpText(p, "Aviso: hoje não existe NENHUM evento cadastrado com o dígito de mapa 4 " ..
+		"(Stalkercotz 1) em sh_eventdefs.lua -- pontos criados nesse mapa não vão " ..
+		"spawnar nada até vocês adicionarem eventdefs com dificuldade 41-45 lá.")
 
 	Button(p, "+ Adicionar ponto na mira", function()
 		local name = nameEntry:GetValue()
 		if name == "" then name = "UNNAMED AREA" end
-		ix.command.Send("eventadd", name, difficulty:GetValue())
+
+		local _, mapDigit = mapCombo:GetSelected()
+		local _, typeDigit = typeCombo:GetSelected()
+		local difficulty = (mapDigit or 1) * 10 + (typeDigit or 1)
+
+		ix.command.Send("eventadd", name, difficulty)
 	end)
 
 	SectionTitle(p, "Remoção / utilidades")
@@ -441,12 +477,86 @@ local function BuildEventTab(sheet)
 		ix.command.Send("eventdisplay")
 	end)
 
-	Button(p, "Forçar checagem de evento agora", function()
+	Button(p, "Forçar 1 evento agora", function()
 		ix.command.Send("eventforce")
 	end)
 
-	Button(p, "Popular evento agora", function()
+	Button(p, "Popular evento agora (rajada de vários)", function()
 		ix.command.Send("eventpopulate")
+	end)
+
+	previewGetters[#sheet.Items] = { removeRadius = function() return radius:GetValue() end }
+end
+
+local function BuildEventAdvTab(sheet)
+	local p = NewTabScroll(sheet, "Eventos Avançados", "icon16/flag_red.png")
+
+	HelpText(p, "Sistema diferente do 'Eventos' comum: eventos roteirizados específicos " ..
+		"(ex: caixa de suprimentos, base de mercenários). Cada ponto precisa de um nome " ..
+		"INTERNO exato que já existe em eventcontrolleradv/sh_eventdefs.lua -- por isso " ..
+		"o campo abaixo é um dropdown com os nomes válidos em vez de texto livre. " ..
+		"Também depende do addon AdvDupe2 estar instalado, dependendo do evento.")
+
+	local advPlugin = ix.plugin.list["eventcontrolleradv"]
+	local nameEntry = TextEntry(p, "Nome de exibição", "ex: Base Abandonada")
+	local internalCombo = Combo(p, "Nome interno (allowedPoints)")
+
+	if advPlugin and advPlugin.eventdefs then
+		local seen = {}
+		local keys = {}
+
+		for _, def in pairs(advPlugin.eventdefs) do
+			if def.allowedPoints then
+				for _, pointName in ipairs(def.allowedPoints) do
+					if not seen[pointName] then
+						seen[pointName] = true
+						keys[#keys + 1] = pointName
+					end
+				end
+			end
+		end
+
+		table.sort(keys)
+
+		for _, k in ipairs(keys) do
+			internalCombo:AddChoice(k, k)
+		end
+
+		if keys[1] then
+			internalCombo:ChooseOption(keys[1], 1)
+		end
+	else
+		HelpText(p, "(plugin eventcontrolleradv não encontrado)")
+	end
+
+	Button(p, "+ Adicionar ponto na mira", function()
+		local name = nameEntry:GetValue()
+		if name == "" then name = "UNNAMED AREA" end
+
+		local internalName = internalCombo:GetSelected()
+		if not internalName or internalName == "" then return end
+
+		ix.command.Send("eventadvadd", name, internalName)
+	end)
+
+	SectionTitle(p, "Remoção / utilidades")
+
+	local radius = NumberWang(p, "Raio de remoção (unidades)", 8, 1024, 128)
+
+	Button(p, "Remover pontos próximos à mira", function()
+		ix.command.Send("eventadvremove", radius:GetValue())
+	end)
+
+	Button(p, "Mostrar todos os pontos (10s)", function()
+		ix.command.Send("eventadvdisplay")
+	end)
+
+	Button(p, "Forçar 1 evento avançado agora", function()
+		ix.command.Send("eventadvforce")
+	end)
+
+	Button(p, "Popular eventos avançados agora (rajada)", function()
+		ix.command.Send("eventadvpopulate")
 	end)
 
 	previewGetters[#sheet.Items] = { removeRadius = function() return radius:GetValue() end }
@@ -497,6 +607,14 @@ local function BuildContainerTab(sheet)
 
 	Button(p, "Mostrar todos os containers cíclicos (10s)", function()
 		ix.command.Send("containercyclicaldisplay")
+	end)
+
+	Button(p, "Forçar aparecer com loot novo (container na mira)", function()
+		ix.command.Send("containercyclicalforce")
+	end)
+
+	Button(p, "Forçar TODOS os containers cíclicos do mapa a aparecer", function()
+		ix.command.Send("containercyclicalforceall")
 	end)
 end
 
@@ -549,11 +667,17 @@ local function BuildContainerSpawnTab(sheet)
 		ix.command.Send("containerspawnremove")
 	end)
 
+	SectionTitle(p, "Utilidades")
+
+	Button(p, "Forçar item no container na mira agora", function()
+		ix.command.Send("containerspawnforce")
+	end)
+
 	HelpText(p, "Não existe comando de 'mostrar todos' para este sistema.")
 end
 
 local function BuildContainerEntitySpawnTab(sheet)
-	local p = NewTabScroll(sheet, "Spawnar Container", "icon16/box_add.png")
+	local p = NewTabScroll(sheet, "Spawnar Container", "icon16/package_add.png")
 
 	HelpText(p, "Mire no local do mapa e escolha um modelo já registrado em " ..
 		"ix.container.stored (containers/sh_definitions.lua) para criar um " ..
@@ -618,6 +742,7 @@ local function BuildInfoTab(sheet)
 	HelpText(p, "Mire em um item já jogado no mapa (entidade ix_item) e clique no botão " ..
 		"abaixo. O uniqueID aparece no chat e já é copiado para a área de transferência, " ..
 		"pronto pra colar nos campos de 'grupo/pool' das outras abas.")
+
 	Button(p, "Copiar uniqueID do item na mira", function()
 		ix.command.Send("itemid")
 	end)
@@ -655,6 +780,7 @@ local function OpenSpawnMenu()
 	BuildRadiationTab(sheet)
 	BuildAnomalyTab(sheet)
 	BuildEventTab(sheet)
+	BuildEventAdvTab(sheet)
 	BuildContainerTab(sheet)
 	BuildContainerSpawnTab(sheet)
 	BuildContainerEntitySpawnTab(sheet)

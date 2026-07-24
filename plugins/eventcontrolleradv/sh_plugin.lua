@@ -34,7 +34,10 @@ local icon = "vgui/icons/news.png"
 PLUGIN.MapToDifficultyMap = {
 	["rp_marsh_cs"] = 1,
 	["rp_waystation"] = 2,
-	["rp_pripyat_remaster"] = 3
+	["rp_pripyat_remaster"] = 3,
+	["stalkercotz_1"] = 4, -- ainda não existe nenhum eventdef com difficulty = 4,
+	                       -- então eventos avançados não vão spawnar aqui até
+	                       -- vocês cadastrarem algum em sh_eventdefs.lua.
 }
 
 ix.chat.Register("eventpda", {
@@ -280,14 +283,26 @@ ix.command.Add("eventadvdisplay", {
 
 ix.command.Add("eventadvforce", {
 	adminOnly = true,
-	OnRun = function(client, arguments)
+	OnRun = function(self, client)
+		if table.IsEmpty(PLUGIN.eventpoints or {}) then
+			client:Notify("Nenhum ponto de evento avançado cadastrado ainda. Use /eventadvadd primeiro.")
+			return
+		end
+
 		PLUGIN:setSpawnTime(1)
+		client:Notify("Um evento avançado será forçado no próximo tick do servidor.")
 	end
 })
 
 ix.command.Add("eventadvpopulate", {
 	adminOnly = true,
 	OnRun = function(self, client, arguments)
+		if table.IsEmpty(PLUGIN.eventpoints or {}) then
+			client:Notify("Nenhum ponto de evento avançado cadastrado ainda. Use /eventadvadd primeiro.")
+			return
+		end
+
 		PLUGIN:setPopulate(true)
+		client:Notify("Populando com " .. PLUGIN.populateAmount .. " eventos avançados no próximo tick do servidor.")
 	end
 })

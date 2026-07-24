@@ -23,6 +23,11 @@ ix.config.Add("artifactSpawnerChance", 3, "Chance for artifacts per anomalyfield
 	category = "Spawning"
 })
 
+ix.config.Add("anomalySpacingMultiplier", 1.5, "Multiplica a distância mínima (o 'interval' de cada anomalia) usada para espaçar anomalias entre si num mesmo ponto. Valores maiores = anomalias mais espalhadas (e menos queda de FPS de várias muito próximas), mas pode fazer algumas ficarem de fora se o raio for pequeno.", nil, {
+	data = {min = 0.5, max = 5},
+	category = "Spawning"
+})
+
 if SERVER then
 	local spawntime = 1
 
@@ -142,8 +147,25 @@ if SERVER then
 			end
 
 			local entity = table.Random(selectedAnoms)
+
+			-- Se o ponto foi criado sem nenhuma anomalia marcada (bitstring
+			-- só de zeros), table.Random retorna nil e o resto da função
+			-- quebrava tudo (inclusive no LoadData, ou seja, todo load de
+			-- mapa). Agora só pulamos esse ponto quebrado.
+			if not entity then continue end
+
+			-- Guarda as posições já usadas NESTE ponto, pra distribuir
+			-- melhor as anomalias entre si (evita elas ficarem muito
+			-- próximas umas das outras, o que causa queda de FPS quando o
+			-- jogador olha pra várias ao mesmo tempo).
+			local placedPositions = {}
+
 			for i = 1, math.ceil(v[2]/entity.interval) do
-				local position = self:GetSpawnLocation( v[1], v[2] )
+				local minDistance = entity.interval * ix.config.Get("anomalySpacingMultiplier", 1.5)
+				local position = self:GetSpawnLocationSpaced( v[1], v[2], minDistance, placedPositions )
+
+				if not position then continue end
+
 				local data = {}
 				data.start = position
 				data.endpos = position
@@ -159,6 +181,8 @@ if SERVER then
 				spawnedent:SetPos(position)
 				spawnedent:Spawn()
 				spawnedent:DropToFloor()
+
+				table.insert(placedPositions, position)
 			end
 		end
 	end
@@ -214,6 +238,49 @@ if SERVER then
 
 
 		return teleres
+	end
+
+	-- Igual ao GetSpawnLocation, mas tenta várias vezes até achar um ponto
+	-- que fique a pelo menos "minDistance" de distância de todas as
+	-- posições já usadas nesse mesmo ponto de spawn (existingPositions).
+	-- Isso evita várias anomalias do mesmo ponto ficarem grudadas umas nas
+	-- outras quando o raio é grande (600-1000+ unidades).
+	function PLUGIN:GetSpawnLocationSpaced(pos, radius, minDistance, existingPositions)
+		local bestCandidate, bestCandidateDistance = nil, -1
+
+		for attempt = 1, 20 do
+			local candidate = self:GetSpawnLocation(pos, radius)
+
+			if #existingPositions == 0 then
+				return candidate
+			end
+
+			local minDistToExisting = math.huge
+
+			for _, existing in ipairs(existingPositions) do
+				local dist = candidate:Distance(existing)
+
+				if dist < minDistToExisting then
+					minDistToExisting = dist
+				end
+			end
+
+			if minDistToExisting >= minDistance then
+				return candidate
+			end
+
+			-- Guarda o melhor candidato até agora (o mais afastado dos
+			-- outros), caso nenhuma tentativa consiga respeitar a
+			-- distância mínima (ex: raio pequeno demais pra quantidade de
+			-- anomalias) -- assim ainda usamos o menos ruim, em vez de
+			-- simplesmente empilhar tudo em cima.
+			if minDistToExisting > bestCandidateDistance then
+				bestCandidateDistance = minDistToExisting
+				bestCandidate = candidate
+			end
+		end
+
+		return bestCandidate
 	end
 
 else
