@@ -476,6 +476,19 @@ do
 			HelpText(p, "Aviso: hoje não existe evento cadastrado com dígito de mapa 4 " ..
 				"(Stalkercotz 1) -- precisa adicionar eventdefs com dificuldade 41-45.")
 
+			local eventPlugin = ix.plugin.list["eventcontroller"]
+			local defCombo = Combo(p, "Evento específico (opcional)")
+			defCombo:AddChoice("Aleatório (usa a dificuldade acima)", "")
+
+			if eventPlugin and eventPlugin.eventdefs then
+				local keys = {}
+				for k in pairs(eventPlugin.eventdefs) do keys[#keys + 1] = k end
+				table.sort(keys)
+				for _, k in ipairs(keys) do defCombo:AddChoice(k, k) end
+			end
+
+			defCombo:ChooseOptionID(1)
+
 			local radius = NumberWang(p, "Raio de remoção (botão direito)", 8, 1024, 128)
 
 			Button(p, "Forçar 1 evento agora", function()
@@ -496,7 +509,11 @@ do
 					local _, typeDigit = typeCombo:GetSelected()
 					local difficulty = (mapDigit or 1) * 10 + (typeDigit or 1)
 
-					return { name, difficulty }
+					local defName = defCombo:GetSelected()
+					local args = { name, difficulty }
+					if defName and defName ~= "" then args[#args + 1] = defName end
+
+					return args
 				end,
 				removeCmd = "eventremove",
 				getRemoveArgs = function() return { radius:GetValue() } end,

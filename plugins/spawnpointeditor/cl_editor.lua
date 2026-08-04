@@ -454,6 +454,27 @@ local function BuildEventTab(sheet)
 		"(Stalkercotz 1) em sh_eventdefs.lua -- pontos criados nesse mapa não vão " ..
 		"spawnar nada até vocês adicionarem eventdefs com dificuldade 41-45 lá.")
 
+	local eventPlugin = ix.plugin.list["eventcontroller"]
+	local defCombo = Combo(p, "Evento específico (opcional)")
+	defCombo:AddChoice("Aleatório (usa a dificuldade acima)", "")
+
+	if eventPlugin and eventPlugin.eventdefs then
+		local keys = {}
+		for k in pairs(eventPlugin.eventdefs) do keys[#keys + 1] = k end
+		table.sort(keys)
+
+		for _, k in ipairs(keys) do
+			defCombo:AddChoice(k, k)
+		end
+	end
+
+	defCombo:ChooseOptionID(1)
+
+	HelpText(p, "Se escolher um evento específico aqui, esse ponto SEMPRE vai spawnar " ..
+		"exatamente esse evento (ignora a dificuldade pra escolher, mas ela ainda é " ..
+		"salva com o ponto). Deixe em 'Aleatório' pra manter o comportamento antigo " ..
+		"(sorteia entre todos os eventos que aceitam aquela dificuldade).")
+
 	Button(p, "+ Adicionar ponto na mira", function()
 		local name = nameEntry:GetValue()
 		if name == "" then name = "UNNAMED AREA" end
@@ -462,7 +483,13 @@ local function BuildEventTab(sheet)
 		local _, typeDigit = typeCombo:GetSelected()
 		local difficulty = (mapDigit or 1) * 10 + (typeDigit or 1)
 
-		ix.command.Send("eventadd", name, difficulty)
+		local defName = defCombo:GetSelected()
+
+		if defName and defName ~= "" then
+			ix.command.Send("eventadd", name, difficulty, defName)
+		else
+			ix.command.Send("eventadd", name, difficulty)
+		end
 	end)
 
 	SectionTitle(p, "Remoção / utilidades")

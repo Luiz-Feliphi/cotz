@@ -87,7 +87,16 @@ if SERVER then
 			end
 		end,
 		["eventcontroller"] = function(id, data)
-			return "{ Vector("..data[1].x..","..data[1].y..","..data[1].z..") , \""..data[2].."\" , "..data[3].." }, \n"
+			local str = "{ Vector("..data[1].x..","..data[1].y..","..data[1].z..") , \""..data[2].."\" , "..data[3]
+
+			-- data[4] é opcional (nome de um eventdef específico fixado
+			-- nesse ponto); só inclui se existir, pra não quebrar o
+			-- formato de pontos antigos que não têm esse valor.
+			if data[4] and data[4] ~= "" then
+				str = str.." , \""..data[4].."\""
+			end
+
+			return str.." }, \n"
 		end,
 		["eventcontrolleradv"] = function(id, data)
 			return "[\""..id.."\"] = { Vector("..data[1].x..","..data[1].y..","..data[1].z..") , \""..data[2].."\" }, \n"
