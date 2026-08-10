@@ -5,5 +5,5 @@
 	"author" 		"verne, gumlefar & cyanide"
 	"menusystem"	"1"
 	"category"		"pve"
-	"workshopid"	"2290918731"
+	"workshopid"	"3566553411"
 }

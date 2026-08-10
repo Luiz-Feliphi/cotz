@@ -182,6 +182,7 @@
 					dat.data.dogs[i] = ents.Create("npc_mutant_dog")
 					dat.data.dogs[i]:SetPos(position)
 					dat.data.dogs[i]:Spawn()
+					PLUGIN:TrackEventNPC(dat.data.dogs[i], dat.eventpoint)
 				end
 				dat.data.spawnsleft = dat.data.spawnsleft - 1
 			end

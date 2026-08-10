@@ -48,21 +48,27 @@ do
 			value = tostring(value):gsub("\r\n", ""):gsub("\n", "")
 			value = string.Trim(value)
 
-			return hook.Run("GetDefaultCharacterName", client, payload.faction) or value:utf8sub(1, 70)
+			-- if the player left the field empty, fall back to a freshly rolled name
+			-- otherwise respect whatever name the player actually typed in
+			if (value == "") then
+				return hook.Run("GetDefaultCharacterName", client, payload.faction) or value:utf8sub(1, 70)
+			end
+
+			return value:utf8sub(1, 70)
 		end,
 		OnPostSetup = function(self, panel, payload)
 			local faction = ix.faction.indices[payload.faction]
-			local name, disabled = hook.Run("GetDefaultCharacterName", LocalPlayer(), payload.faction), true
+			local name = hook.Run("GetDefaultCharacterName", LocalPlayer(), payload.faction)
 
 			if (name) then
 				panel:SetText(name)
 				payload:Set("name", name)
 			end
 
-			if (disabled) then
-				panel:SetDisabled(true)
-				panel:SetEditable(false)
-			end
+			-- leave the field editable so the player can either keep the
+			-- rolled name or type their own instead
+			panel:SetDisabled(false)
+			panel:SetEditable(true)
 		end
 	})
 end

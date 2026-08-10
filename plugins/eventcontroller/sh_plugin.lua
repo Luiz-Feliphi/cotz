@@ -18,6 +18,37 @@ PLUGIN.saferadius = 1500
 
 PLUGIN.spawnrate = 30
 
+-- Controle de "aguarda limpar antes de spawnar de novo" -- POR PONTO
+-- individual de evento (não é uma contagem global). A cada
+-- eventNPCCheckInterval segundos, cada ponto tem seus NPCs checados
+-- separadamente (inclui os spawnados de forma forçada via /eventforce,
+-- /eventpopulate, /eventmenu, já que todos passam por spawnEvent com o
+-- eventpoint certo). Se aquele ponto ainda tiver 1+ NPC vivo, ele fica
+-- bloqueado até o próximo check. Se zerou, aguarda mais
+-- eventSpawnGraceTime segundos de "graça" antes de liberar o próximo
+-- spawn automático NAQUELE ponto -- os outros pontos não são afetados.
+PLUGIN.eventNPCCheckInterval = 300 -- 5 minutos
+PLUGIN.eventSpawnGraceTime = 300 -- 5 minutos
+PLUGIN.spawnedNPCsByPoint = PLUGIN.spawnedNPCsByPoint or {} -- [eventpoint] = {[entity]=true, ...}
+PLUGIN.pointGateState = PLUGIN.pointGateState or {} -- [eventpoint] = {allowedTime = nil/timestamp}
+PLUGIN.nextEventCheck = PLUGIN.nextEventCheck or 0
+
+-- Categorias do menu nativo de NPCs (list.Get("NPC"), o mesmo menu que
+-- aparece no F4 -> NPCs) que serão exibidas na aba "NPCs Personalizados"
+-- do /eventmenu. Adicione/remova nomes de categoria aqui se seus NPCs
+-- do STALKER estiverem cadastrados sob outro nome.
+PLUGIN.customSpawnCategories = {
+	"S.T.A.L.K.E.R RP",
+	"S.T.A.L.K.E.R RP Humans",
+	"Zumbis + Aliens Inimigos",
+}
+
+-- Limites de segurança para o spawn personalizado via /eventmenu, pra um
+-- admin não travar o servidor pedindo 500 controllers de uma vez.
+PLUGIN.customSpawnMaxPerClass = 50
+PLUGIN.customSpawnMaxTotal = 60
+PLUGIN.eventDefMaxRepeats = 10
+
 local icon = Material("vgui/icons/news.png")
 
 ix.config.Add("eventControllerThreshold", 70, "How many mutants should the controller keep on the map.", nil, {
@@ -27,7 +58,17 @@ ix.config.Add("eventControllerThreshold", 70, "How many mutants should the contr
 
 if SERVER then
 	local spawntime = 1
-	local populate = true
+
+	-- ANTES: "local populate = true" resetava pra true toda vez que o
+	-- arquivo era recarregado (hot-reload), fazendo a leva inicial rodar
+	-- de novo a cada reload -- e como o LoadData() também zerava o
+	-- rastreamento de NPCs (ver abaixo), o sistema "esquecia" dos bandits
+	-- já vivos e empilhava mais em cima, sem limite.
+	--
+	-- Agora usamos um campo em PLUGIN (não uma local), que sobrevive a
+	-- reloads (PLUGIN é a mesma tabela global reaproveitada pelo Helix).
+	-- Só roda a leva inicial se NUNCA rodou nessa sessão do servidor.
+	PLUGIN.hasPopulated = PLUGIN.hasPopulated or false
 	
 	function PLUGIN:IsClear(position)
 		
@@ -76,6 +117,13 @@ if SERVER then
 					newNPC:SetPos(position)
 					newNPC:Spawn()
 					newNPC:DropToFloor()
+
+					-- Rastreia esse NPC ligado ao PONTO específico onde ele
+					-- nasceu (não a um contador global). Cobre TODOS os
+					-- caminhos de spawn (automático, /eventforce,
+					-- /eventpopulate, /eventmenu), pois todos passam por
+					-- essa função.
+					self:TrackNPCForPoint(eventpoint, newNPC)
 				end
 			end
 		end
@@ -124,15 +172,111 @@ if SERVER then
 	function PLUGIN:setSpawnTime(time)
 		spawntime = time
 	end
+
+	-- Vincula um NPC a um eventpoint específico (a mesma tabela usada em
+	-- self.eventpoints[mapa], ou uma tabela avulsa no caso de spawns
+	-- manuais via /eventmenu -- nesse caso ela só existe pra essa
+	-- rodada e não interfere no gate dos pontos "de verdade").
+	function PLUGIN:TrackNPCForPoint(eventpoint, npc)
+		if not IsValid(npc) then return end
+
+		self.spawnedNPCsByPoint[eventpoint] = self.spawnedNPCsByPoint[eventpoint] or {}
+		self.spawnedNPCsByPoint[eventpoint][npc] = true
+
+		-- Bloqueia esse ponto JÁ, assim que um NPC nasce nele -- não espera
+		-- o próximo check periódico (que podia demorar até 5 min), senão o
+		-- mesmo ponto continuava "elegível" e levava spawn de novo a cada
+		-- 30s (ciclo do Think) até o check seguinte perceber que já tinha
+		-- NPC vivo ali.
+		local state = self:GetPointGateState(eventpoint)
+		state.allowedTime = nil
+
+		print("[EventController] Rastreando NPC '" .. npc:GetClass() .. "' no ponto '" ..
+			tostring(eventpoint[2]) .. "'. Total vivo nesse ponto agora: " ..
+			table.Count(self.spawnedNPCsByPoint[eventpoint]))
+
+		npc:CallOnRemove("ixEventController_UntrackNPC", function()
+			local list = self.spawnedNPCsByPoint[eventpoint]
+			if list then list[npc] = nil end
+		end)
+	end
+
+	-- Limpa NPCs mortos/removidos da lista de UM ponto e devolve quantos
+	-- ainda estão vivos ali.
+	function PLUGIN:GetTrackedNPCCountForPoint(eventpoint)
+		local list = self.spawnedNPCsByPoint[eventpoint]
+		if not list then return 0 end
+
+		for npc in pairs(list) do
+			if not IsValid(npc) then
+				list[npc] = nil
+			end
+		end
+
+		return table.Count(list)
+	end
+
+	-- Estado do gate (liberado/bloqueado) de UM ponto específico.
+	function PLUGIN:GetPointGateState(eventpoint)
+		local state = self.pointGateState[eventpoint]
+
+		if not state then
+			state = { allowedTime = nil }
+			self.pointGateState[eventpoint] = state
+		end
+
+		return state
+	end
+
+	-- Roda a cada eventNPCCheckInterval segundos (5 min por padrão) e
+	-- atualiza o gate de CADA ponto individualmente: se aquele ponto
+	-- ainda tem NPC vivo, fica bloqueado e tenta de novo no próximo
+	-- check; se zerou, começa a contar o período de graça daquele ponto
+	-- específico antes de liberar o próximo spawn ali.
+	function PLUGIN:UpdateEventSpawnGate()
+		if CurTime() < self.nextEventCheck then return end
+		self.nextEventCheck = CurTime() + self.eventNPCCheckInterval
+
+		local points = self.eventpoints[game.GetMap()]
+		if not points then return end
+
+		--print("[EventController] --- Check periódico dos pontos ---")
+
+		for _, eventpoint in pairs(points) do
+			local state = self:GetPointGateState(eventpoint)
+			local count = self:GetTrackedNPCCountForPoint(eventpoint)
+
+			if count >= 1 then
+				state.allowedTime = nil
+				--print("[EventController] Ponto '" .. tostring(eventpoint[2]) .. "': " .. count .. " NPC(s) vivo(s) -- continua bloqueado.")
+			elseif not state.allowedTime then
+				state.allowedTime = CurTime() + self.eventSpawnGraceTime
+				--print("[EventController] Ponto '" .. tostring(eventpoint[2]) .. "': zerou -- libera em " .. self.eventSpawnGraceTime .. "s.")
+			else
+				continue-- print("[EventController] Ponto '" .. tostring(eventpoint[2]) .. "': já estava liberado/em graça, sem mudança.")
+			end
+		end
+	end
 	
 	function PLUGIN:setPopulate(bool)
-		populate = bool
+		self.hasPopulated = not bool
 	end
 
 	function PLUGIN:LoadData()
 		self.eventpoints = self:GetData() or {}
 
 		self.eventpoints[game.GetMap()] = self.eventpoints[game.GetMap()] or {}
+
+		self.nextEventCheck = 0 -- força o primeiro check já no próximo Think
+
+		-- ANTES isso zerava incondicionalmente, apagando a memória de quais
+		-- NPCs já estavam vivos toda vez que o plugin recarregava (mesmo
+		-- com eles ainda vivos no mapa) -- fazendo o sistema achar que os
+		-- pontos estavam vazios e liberando spawn em cima de spawn. Agora só
+		-- inicializa se realmente ainda não existir (primeiro load de
+		-- verdade), preservando o rastreamento em reloads.
+		self.spawnedNPCsByPoint = self.spawnedNPCsByPoint or {}
+		self.pointGateState = self.pointGateState or {}
 	end
 
 	function PLUGIN:SaveData()
@@ -175,39 +319,61 @@ if SERVER then
 	function PLUGIN:Think()
 		if table.IsEmpty(self.eventpoints) then return end
 
-		if populate then
+		if not self.hasPopulated then
+			print("[EventController] Rodando leva de populate inicial (" .. self.populateAmount .. " eventos, NÃO passa pelo gate de NPCs).")
+
 			for i = 1, self.populateAmount do
 				local eventpoint = table.Random(self.eventpoints[game.GetMap()])
 
-				-- Antes, um "return" aqui saía da função inteira sem nunca
-				-- zerar "populate", deixando ele preso em true (o Think
-				-- ficava tentando de novo a cada tick, do zero). Agora só
-				-- pulamos essa tentativa e seguimos as outras.
 				if (!eventpoint) then continue end
 
-				local spawn = self:GetMatchingEventDef(eventpoint[3])
+				-- Segurança extra: mesmo sendo a leva inicial, não empilha
+				-- em cima de um ponto que já tem NPC vivo rastreado (só
+				-- importa se essa leva rodar de novo por algum motivo
+				-- inesperado; numa leva inicial de verdade, tudo começa
+				-- vazio mesmo).
+				if self:GetTrackedNPCCountForPoint(eventpoint) >= 1 then continue end
+
+				local spawn = self:GetEventDefForPoint(eventpoint)
 				if (!spawn) then continue end
 
 				self:spawnEvent(eventpoint,spawn)
 			end
 			
-			populate = false
+			self.hasPopulated = true
 		end
-		
+
+		self:UpdateEventSpawnGate()
+
 		if spawntime > CurTime() then return end
 		spawntime = CurTime() + self.spawnrate
 
 		if( self:GetNumMutants() > ix.config.Get("eventControllerThreshold",35)) then return end
 
-		local eventpoint = table.Random(self.eventpoints[game.GetMap()])
-		if (!eventpoint) then
-			return
+		-- Só considera pontos cujo gate individual já está liberado (NPCs
+		-- do evento anterior daquele ponto morreram + período de graça já
+		-- passou). Spawns forçados (/eventforce, /eventpopulate,
+		-- /eventmenu) continuam funcionando sempre em qualquer ponto,
+		-- pois chamam spawnEvent direto, sem passar por esse filtro.
+		local eligiblePoints = {}
+
+		for _, point in pairs(self.eventpoints[game.GetMap()]) do
+			local state = self:GetPointGateState(point)
+
+			if state.allowedTime and CurTime() >= state.allowedTime then
+				eligiblePoints[#eligiblePoints + 1] = point
+			end
 		end
+
+		if #eligiblePoints == 0 then return end
+
+		local eventpoint = table.Random(eligiblePoints)
 		if( !self:IsClear(eventpoint[1]) ) then return end
 
-		local spawn = self:GetMatchingEventDef(eventpoint[3])
+		local spawn = self:GetEventDefForPoint(eventpoint)
 		if (!spawn) then return end
 
+		print("[EventController] Spawn AUTOMÁTICO liberado no ponto '" .. eventpoint[2] .. "'.")
 		self:spawnEvent(eventpoint, spawn)
 		
 		if ix.progression.IsCompleted("muteItemDelivery_Broadcast") then
@@ -231,6 +397,84 @@ if SERVER then
 		return #ents.FindByClass("npc_*")
 	end
 
+	local function GetAimPosition(client)
+		local trace = client:GetEyeTraceNoCursor()
+		return trace.HitPos + trace.HitNormal * 5
+	end
+
+	-- Spawna um eventdef já cadastrado (dos sh_eventdefs.lua) "amount" vezes
+	-- no ponto que o admin está mirando, ao invés de sortear aleatoriamente.
+	netstream.Hook("ixEventMenuSpawnDef", function(client, defName, amount)
+		if not IsValid(client) or not client:IsAdmin() then return end
+		if not isstring(defName) then return end
+
+		local def = PLUGIN.eventdefs[defName]
+
+		if not def then
+			client:Notify("Evento '" .. tostring(defName) .. "' não existe em sh_eventdefs.lua.")
+			return
+		end
+
+		amount = math.Clamp(math.Round(tonumber(amount) or 1), 1, PLUGIN.eventDefMaxRepeats)
+
+		local hitpos = GetAimPosition(client)
+		local eventpoint = {hitpos, "Evento Manual (" .. client:Nick() .. ")", 0}
+
+		local before = #ents.FindByClass("npc_*")
+
+		for i = 1, amount do
+			PLUGIN:spawnEvent(eventpoint, def)
+		end
+
+		local after = #ents.FindByClass("npc_*")
+
+		client:Notify(Format("Evento '%s' spawnado %d vez(es). %d NPC(s) novo(s) no mapa.",
+			defName, amount, after - before))
+	end)
+
+	-- Spawna uma lista de NPCs escolhidos manualmente (classe + quantidade)
+	-- no ponto que o admin está mirando. Valida cada classe contra o menu
+	-- nativo de NPCs (list.Get("NPC")) pra impedir ents.Create arbitrário.
+	netstream.Hook("ixEventMenuSpawnCustom", function(client, payload)
+		if not IsValid(client) or not client:IsAdmin() then return end
+		if not istable(payload) then return end
+
+		local npcRegistry = list.Get("NPC") or {}
+		local sanitized = {}
+		local totalRequested = 0
+
+		for _, entry in ipairs(payload) do
+			local class = entry[1]
+			local count = math.Clamp(math.Round(tonumber(entry[2]) or 0), 0, PLUGIN.customSpawnMaxPerClass)
+
+			if isstring(class) and npcRegistry[class] and count > 0 then
+				sanitized[#sanitized + 1] = {class, count}
+				totalRequested = totalRequested + count
+			end
+		end
+
+		if #sanitized == 0 then
+			client:Notify("Nenhum NPC válido foi enviado.")
+			return
+		end
+
+		if totalRequested > PLUGIN.customSpawnMaxTotal then
+			client:Notify("Você pediu " .. totalRequested .. " NPCs de uma vez -- o limite é " ..
+				PLUGIN.customSpawnMaxTotal .. ". Reduza a quantidade.")
+			return
+		end
+
+		local hitpos = GetAimPosition(client)
+		local eventpoint = {hitpos, "NPCs Personalizados (" .. client:Nick() .. ")", 0}
+		local spawn = {entities = sanitized}
+
+		local before = #ents.FindByClass("npc_*")
+		PLUGIN:spawnEvent(eventpoint, spawn)
+		local after = #ents.FindByClass("npc_*")
+
+		client:Notify((after - before) .. " NPC(s) personalizado(s) spawnado(s) no ponto mirado.")
+	end)
+
 	-- Antes disso, o código escolhia um eventdef ALEATÓRIO e só depois
 	-- checava (também por sorteio) se a dificuldade batia -- então mesmo
 	-- quando existia um evento válido pra aquele ponto, podia falhar por
@@ -250,6 +494,21 @@ if SERVER then
 
 		return table.Random(candidates)
 	end
+
+	-- Pontos podem opcionalmente ter um 4º valor (eventpoint[4]) com o
+	-- nome EXATO de um eventdef -- nesse caso, sempre usamos esse evento
+	-- específico em vez de sortear entre os que batem com a dificuldade.
+	-- Pontos antigos (só 3 valores, sem nome fixo) continuam funcionando
+	-- exatamente como antes.
+	function PLUGIN:GetEventDefForPoint(eventpoint)
+		local defName = eventpoint[4]
+
+		if defName and defName ~= "" and self.eventdefs[defName] then
+			return self.eventdefs[defName]
+		end
+
+		return self:GetMatchingEventDef(eventpoint[3])
+	end
 else
 	netstream.Hook("nut_DisplaySpawnPoints", function(data)
 		for k, v in pairs(data) do
@@ -266,25 +525,359 @@ else
 		end
 	end)
 
+	--[[-------------------------------------------------------------------------
+	Menu de eventos (/eventmenu)
+
+	Duas abas:
+	1) "Eventos Pré-definidos" - lista os eventdefs de sh_eventdefs.lua
+	   (o arquivo é sh_, então PLUGIN.eventdefs já existe aqui no client)
+	   e permite escolher um e repeti-lo N vezes no ponto mirado.
+	2) "NPCs Personalizados" - lista os NPCs registrados no menu nativo
+	   (list.Get("NPC"), o mesmo menu do F4 -> NPCs) filtrados pelas
+	   categorias em PLUGIN.customSpawnCategories, permitindo escolher
+	   quais NPCs e quantos de cada spawnar no ponto mirado.
+	---------------------------------------------------------------------------]]
+	function PLUGIN:OpenEventMenu()
+		if IsValid(self.eventMenuFrame) then
+			self.eventMenuFrame:Remove()
+		end
+
+		local frame = vgui.Create("DFrame")
+		frame:SetSize(700, 520)
+		frame:Center()
+		frame:SetTitle("Gerenciador de Eventos")
+		frame:MakePopup()
+		self.eventMenuFrame = frame
+
+		local sheet = vgui.Create("DPropertySheet", frame)
+		sheet:Dock(FILL)
+
+		----------------------------------------------------------------
+		-- Aba 1: eventos pré-definidos
+		----------------------------------------------------------------
+		local defPanel = vgui.Create("DPanel")
+		defPanel.Paint = function() end
+
+		local defSearch = vgui.Create("DTextEntry", defPanel)
+		defSearch:Dock(TOP)
+		defSearch:DockMargin(5, 5, 5, 5)
+		defSearch:SetPlaceholderText("Buscar evento por nome...")
+
+		local defList = vgui.Create("DListView", defPanel)
+		defList:Dock(FILL)
+		defList:DockMargin(5, 0, 5, 5)
+		defList:SetMultiSelect(false)
+		defList:AddColumn("Evento")
+		defList:AddColumn("Dificuldades")
+		defList:AddColumn("NPCs")
+
+		local function PopulateDefList(filter)
+			defList:Clear()
+
+			local keys = {}
+			for name in pairs(self.eventdefs) do
+				keys[#keys + 1] = name
+			end
+			table.sort(keys)
+
+			for _, name in ipairs(keys) do
+				if filter and filter ~= "" and not string.find(string.lower(name), string.lower(filter), 1, true) then
+					continue
+				end
+
+				local def = self.eventdefs[name]
+				local diffStr = def.difficulty and table.concat(def.difficulty, ", ") or ""
+				local npcParts = {}
+
+				if def.entities then
+					for _, ent in ipairs(def.entities) do
+						npcParts[#npcParts + 1] = ent[1] .. " x" .. ent[2]
+					end
+				end
+
+				local line = defList:AddLine(name, diffStr, table.concat(npcParts, ", "))
+				line.eventName = name
+			end
+		end
+
+		PopulateDefList()
+
+		defSearch.OnChange = function(this)
+			PopulateDefList(this:GetValue())
+		end
+
+		local defBottom = vgui.Create("DPanel", defPanel)
+		defBottom:Dock(BOTTOM)
+		defBottom:SetTall(70)
+		defBottom.Paint = function() end
+
+		local amountLabel = vgui.Create("DLabel", defBottom)
+		amountLabel:Dock(TOP)
+		amountLabel:DockMargin(5, 5, 5, 0)
+		amountLabel:SetText("Quantas vezes repetir o evento escolhido (máx " .. self.eventDefMaxRepeats .. "):")
+		amountLabel:SizeToContentsY()
+
+		local amountSlider = vgui.Create("DNumSlider", defBottom)
+		amountSlider:Dock(TOP)
+		amountSlider:DockMargin(5, 0, 5, 0)
+		amountSlider:SetText("")
+		amountSlider:SetMin(1)
+		amountSlider:SetMax(self.eventDefMaxRepeats)
+		amountSlider:SetDecimals(0)
+		amountSlider:SetValue(1)
+
+		local spawnDefBtn = vgui.Create("DButton", defBottom)
+		spawnDefBtn:Dock(BOTTOM)
+		spawnDefBtn:DockMargin(5, 5, 5, 0)
+		spawnDefBtn:SetText("Spawnar evento selecionado no ponto que estou mirando")
+		spawnDefBtn.DoClick = function()
+			local selected = defList:GetSelectedLine()
+
+			if not selected then
+				LocalPlayer():ChatPrint("Selecione um evento na lista primeiro.")
+				return
+			end
+
+			local line = defList:GetLine(selected)
+			local amount = math.Round(amountSlider:GetValue())
+
+			netstream.Start("ixEventMenuSpawnDef", line.eventName, amount)
+			frame:Close()
+		end
+
+		sheet:AddSheet("Eventos Pré-definidos", defPanel, "icon16/bricks.png")
+
+		----------------------------------------------------------------
+		-- Aba 2: NPCs personalizados
+		----------------------------------------------------------------
+		local customPanel = vgui.Create("DPanel")
+		customPanel.Paint = function() end
+
+		local npcSearch = vgui.Create("DTextEntry", customPanel)
+		npcSearch:Dock(TOP)
+		npcSearch:DockMargin(5, 5, 5, 5)
+		npcSearch:SetPlaceholderText("Buscar NPC por nome ou classe...")
+
+		local npcList = vgui.Create("DListView", customPanel)
+		npcList:Dock(FILL)
+		npcList:DockMargin(5, 0, 0, 5)
+		npcList:SetMultiSelect(false)
+		npcList:AddColumn("NPC")
+		npcList:AddColumn("Classe")
+		npcList:AddColumn("Categoria")
+
+		local selectedPanel = vgui.Create("DScrollPanel", customPanel)
+		selectedPanel:Dock(RIGHT)
+		selectedPanel:SetWide(230)
+		selectedPanel:DockMargin(5, 0, 5, 5)
+
+		local selectedNPCs = {} -- [class] = {name = "...", count = N}
+
+		local function RefreshSelectedList()
+			selectedPanel:Clear()
+
+			for class, info in pairs(selectedNPCs) do
+				local row = vgui.Create("DPanel", selectedPanel)
+				row:Dock(TOP)
+				row:SetTall(55)
+				row:DockMargin(0, 0, 5, 4)
+				row.Paint = function(this, w, h)
+					surface.SetDrawColor(50, 50, 50, 220)
+					surface.DrawRect(0, 0, w, h)
+				end
+
+				local lbl = vgui.Create("DLabel", row)
+				lbl:Dock(TOP)
+				lbl:DockMargin(4, 2, 20, 0)
+				lbl:SetText(info.name)
+				lbl:SetTextColor(color_white)
+
+				local num = vgui.Create("DNumberWang", row)
+				num:Dock(TOP)
+				num:DockMargin(4, 2, 20, 2)
+				num:SetMin(1)
+				num:SetMax(self.customSpawnMaxPerClass)
+				num:SetValue(info.count)
+				num.OnValueChanged = function(this, val)
+					if selectedNPCs[class] then
+						selectedNPCs[class].count = math.Round(val)
+					end
+				end
+
+				local remove = vgui.Create("DButton", row)
+				remove:SetText("Remover")
+				remove:Dock(BOTTOM)
+				remove:SetTall(18)
+				remove.DoClick = function()
+					selectedNPCs[class] = nil
+					RefreshSelectedList()
+				end
+			end
+		end
+
+		local function PopulateNPCList(filter)
+			npcList:Clear()
+
+			local npcRegistry = list.Get("NPC") or {}
+			local allowedCategories = self.customSpawnCategories or {}
+			local rows = {}
+
+			for class, data in pairs(npcRegistry) do
+				local category = data.Category or "Sem categoria"
+
+				if #allowedCategories > 0 and not table.HasValue(allowedCategories, category) then
+					continue
+				end
+
+				local name = data.Name or class
+
+				if filter and filter ~= "" then
+					local f = string.lower(filter)
+					if not string.find(string.lower(name), f, 1, true) and not string.find(string.lower(class), f, 1, true) then
+						continue
+					end
+				end
+
+				rows[#rows + 1] = {name = name, class = class, category = category}
+			end
+
+			table.sort(rows, function(a, b) return a.name < b.name end)
+
+			for _, row in ipairs(rows) do
+				local line = npcList:AddLine(row.name, row.class, row.category)
+				line.npcClass = row.class
+				line.npcName = row.name
+			end
+		end
+
+		PopulateNPCList()
+
+		npcSearch.OnChange = function(this)
+			PopulateNPCList(this:GetValue())
+		end
+
+		npcList.OnRowRightClick = function(this, index, line)
+			if not selectedNPCs[line.npcClass] then
+				selectedNPCs[line.npcClass] = {name = line.npcName, count = 1}
+				RefreshSelectedList()
+			end
+		end
+
+		local hint = vgui.Create("DLabel", customPanel)
+		hint:Dock(BOTTOM)
+		hint:DockMargin(5, 0, 5, 2)
+		hint:SetText("Clique com o botão direito num NPC da lista da esquerda pra adicioná-lo à direita.")
+		hint:SetTextColor(Color(200, 200, 200))
+
+		local spawnCustomBtn = vgui.Create("DButton", customPanel)
+		spawnCustomBtn:Dock(BOTTOM)
+		spawnCustomBtn:DockMargin(5, 5, 5, 5)
+		spawnCustomBtn:SetTall(32)
+		spawnCustomBtn:SetText("Spawnar NPCs selecionados no ponto que estou mirando")
+		spawnCustomBtn.DoClick = function()
+			if table.IsEmpty(selectedNPCs) then
+				LocalPlayer():ChatPrint("Selecione ao menos 1 NPC antes de spawnar.")
+				return
+			end
+
+			local payload = {}
+
+			for class, info in pairs(selectedNPCs) do
+				payload[#payload + 1] = {class, info.count}
+			end
+
+			netstream.Start("ixEventMenuSpawnCustom", payload)
+			frame:Close()
+		end
+
+		sheet:AddSheet("NPCs Personalizados", customPanel, "icon16/user.png")
+	end
+
+	netstream.Hook("ixOpenEventMenu", function()
+		PLUGIN:OpenEventMenu()
+	end)
 end
+
+ix.command.Add("eventgatestatus", {
+	adminOnly = true,
+	OnRun = function(self, client)
+		local points = PLUGIN.eventpoints[game.GetMap()]
+
+		if table.IsEmpty(points or {}) then
+			client:Notify("Nenhum ponto de evento neste mapa ainda.")
+			return
+		end
+
+		local trace = client:GetEyeTraceNoCursor()
+		local hitpos = trace.HitPos + trace.HitNormal*5
+
+		-- Acha o ponto mais próximo de onde o admin está mirando, já que
+		-- cada ponto agora tem seu próprio gate individual.
+		local closest, closestDist
+		for _, point in pairs(points) do
+			local dist = point[1]:Distance(hitpos)
+			if not closestDist or dist < closestDist then
+				closest = point
+				closestDist = dist
+			end
+		end
+
+		if not closest then
+			client:Notify("Nenhum ponto encontrado.")
+			return
+		end
+
+		local count = PLUGIN:GetTrackedNPCCountForPoint(closest)
+		local state = PLUGIN:GetPointGateState(closest)
+		local nextCheckIn = math.max(0, math.Round(PLUGIN.nextEventCheck - CurTime()))
+
+		client:ChatPrint("[EventController] Ponto mais próximo: '" .. closest[2] .. "' (a " .. math.Round(closestDist) .. " unidades)")
+		client:ChatPrint("[EventController] NPCs vivos nesse ponto: " .. count)
+		client:ChatPrint("[EventController] Próximo check de TODOS os pontos em: " .. nextCheckIn .. "s")
+
+		if not state.allowedTime then
+			client:ChatPrint("[EventController] Spawn automático nesse ponto: BLOQUEADO (aguardando NPCs zerarem).")
+		elseif CurTime() < state.allowedTime then
+			local remaining = math.Round(state.allowedTime - CurTime())
+			client:ChatPrint("[EventController] Spawn automático nesse ponto: em período de graça, libera em " .. remaining .. "s.")
+		else
+			client:ChatPrint("[EventController] Spawn automático nesse ponto: LIBERADO agora.")
+		end
+	end
+})
 
 ix.command.Add("eventadd", {
 	superAdminOnly = true,
 	arguments = {
 		ix.type.string,
-		ix.type.number
+		ix.type.number,
+		bit.bor(ix.type.string, ix.type.optional),
 	},
-	OnRun = function(self, client, name, difficulty)
+	OnRun = function(self, client, name, difficulty, eventDefName)
 		local trace = client:GetEyeTraceNoCursor()
 		local hitpos = trace.HitPos + trace.HitNormal*5
 		local name = name or "UNNAMED AREA"
 		local difficulty = difficulty or 1
 
-		if isnumber(difficulty) then
-			table.insert( PLUGIN.eventpoints[game.GetMap()], { hitpos, name, difficulty } )
-			client:Notify( "Event area named '"..name.."' with difficulty "..difficulty.." succesfully added"  )
-		else
+		if not isnumber(difficulty) then
 			client:ChatPrint("Difficulty must be a number.")
+			return
+		end
+
+		-- Se o nome do evento vier errado/não existir mais em
+		-- sh_eventdefs.lua, não trava o ponto com um nome inválido pra
+		-- sempre -- salva só com a dificuldade (comportamento antigo).
+		if eventDefName and eventDefName ~= "" and not PLUGIN.eventdefs[eventDefName] then
+			client:Notify("Aviso: '" .. eventDefName .. "' não existe em sh_eventdefs.lua -- ponto salvo só com a dificuldade, sem evento fixo.")
+			eventDefName = nil
+		end
+
+		table.insert( PLUGIN.eventpoints[game.GetMap()], { hitpos, name, difficulty, eventDefName } )
+
+		if eventDefName and eventDefName ~= "" then
+			client:Notify( "Event area named '"..name.."' fixado no evento '"..eventDefName.."' (dificuldade "..difficulty..")" )
+		else
+			client:Notify( "Event area named '"..name.."' with difficulty "..difficulty.." succesfully added"  )
 		end
 	end
 })
@@ -300,6 +893,12 @@ ix.command.Add("eventremove", {
 			local distance = v[1]:Distance( hitpos )
 			if distance <= tonumber(range) then
 				PLUGIN.eventpoints[game.GetMap()][k] = nil
+
+				-- Limpa o rastreamento de NPCs/gate desse ponto pra não
+				-- ficar lixo acumulando nas tabelas.
+				PLUGIN.spawnedNPCsByPoint[v] = nil
+				PLUGIN.pointGateState[v] = nil
+
 				mt = mt + 1
 			end
 		end
@@ -314,6 +913,13 @@ ix.command.Add("eventdisplay", {
 			netstream.Start(client, "nut_DisplaySpawnPoints", PLUGIN.eventpoints[game.GetMap()])
 			client:Notify( "Displayed All Points for 10 secs." )
 		end
+	end
+})
+
+ix.command.Add("eventmenu", {
+	adminOnly = true,
+	OnRun = function(self, client)
+		netstream.Start(client, "ixOpenEventMenu")
 	end
 })
 
@@ -333,7 +939,7 @@ ix.command.Add("eventforce", {
 			return
 		end
 
-		local spawn = PLUGIN:GetMatchingEventDef(eventpoint[3])
+		local spawn = PLUGIN:GetEventDefForPoint(eventpoint)
 
 		if not spawn then
 			client:Notify("Nenhum evento em sh_eventdefs.lua usa a dificuldade " ..
@@ -375,7 +981,7 @@ ix.command.Add("eventpopulate", {
 			local eventpoint = table.Random(points)
 			if not eventpoint then continue end
 
-			local spawn = PLUGIN:GetMatchingEventDef(eventpoint[3])
+			local spawn = PLUGIN:GetEventDefForPoint(eventpoint)
 			if not spawn then continue end
 
 			PLUGIN:spawnEvent(eventpoint, spawn)

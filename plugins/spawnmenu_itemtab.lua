@@ -1,5 +1,5 @@
 PLUGIN.name = "Spawn Menu: Items"
-PLUGIN.author = "Rune Knight"
+PLUGIN.author = "Rune Knight + Luiz Feliphi"
 PLUGIN.description = "Adds a tab to the spawn menu which players can use to spawn items."
 PLUGIN.license = [[Copyright 2021 Rune Knight
 
@@ -16,7 +16,7 @@ CAMI.RegisterPrivilege({
 
 function PLUGIN:GetExpectedIcon(s)
     local i = {
-        ["Ammunition"] = "icon16/tab.png", -- :shrug:
+        ["Ammunition"] = "icon16/tab.png",
         ["Clothing"] = "icon16/user_suit.png",
         ["Consumables"] = "icon16/pill.png",
         ["Medical"] = "icon16/heart.png",
@@ -25,7 +25,6 @@ function PLUGIN:GetExpectedIcon(s)
         ["Storage"] = "icon16/package.png",
         ["Weapons"] = "icon16/gun.png",
     }
-
     return hook.Run("GetIconsForSpawnMenuItems", s) or i[s] or "icon16/folder.png"
 end
 
@@ -63,22 +62,49 @@ if SERVER then
 else
     function PLUGIN:InitializedPlugins()
         if SERVER then return end
-        RunConsoleCommand("spawnmenu_reload") -- If someone legit knows how to insert stuff into the spawn menu without breaking it or doing it before the spawn menu is created, please tell me. Otherwise, this is the best I got.
+        RunConsoleCommand("spawnmenu_reload")
     end
 
     local PLUGIN = PLUGIN
+    
+    -- CONFIGURAÇÃO DE TAMANHO VISUAL DOS ÍCONES (96x96 pixels)
+    local TAMANHO_CUSTOM = 74
 
     spawnmenu.AddCreationTab("Items", function()
         local p = vgui.Create("SpawnmenuContentPanel")
-        local t, n = p.ContentNavBar.Tree, p.OldSpawnlists
+        local t = p.ContentNavBar.Tree
         local l = {}
 
+        -- Tabela temporária para podermos consultar os itens rapidamente na pesquisa
+        local itemSearchCache = {}
+
+        -- Organiza e armazena os dados dos itens do Helix
         for uid, i in pairs(ix.item.list) do
             local c = i.category
             l[c] = l[c] or {}
             table.insert(l[c], i)
+            
+            -- Salva no cache com o formato que o GMod espera para criar ícones
+            itemSearchCache[string.lower(i.name)] = {
+                nicename = i.name,
+                spawnname = i.uniqueID
+            }
         end
 
+        -- 1. CRIAÇÃO DA BARRA DE PESQUISA (Baseada no modelo enviado)
+        local searchBar = p:Add("DTextEntry")
+        searchBar:Dock(TOP)
+        searchBar:DockMargin(5, 5, 5, 5)
+        searchBar:SetUpdateOnType(true)
+        
+        -- Visual Dark customizado
+        searchBar.Paint = function(self, w, h)
+            draw.RoundedBox(4, 0, 0, w, h, Color(255, 255, 255)) --35, 35, 35, 255
+            self:DrawTextEntryText(Color(35, 35, 35), Color(50, 150, 255), Color(180, 180, 180))
+        end
+        searchBar:SetPlaceholderText(" Pesquisar itens no CoTZ... (Ex: pda)")
+
+        -- Monta a árvore de categorias na esquerda
         for c, i in SortedPairs(l) do
             local icon16 = PLUGIN:GetExpectedIcon(c)
             local node = t:AddNode(L(c), icon16)
@@ -93,19 +119,53 @@ else
                 self.PropPanel:SetVisible(false)
                 self.PropPanel:SetTriggerSpawnlistChange(false)
 
-                for _, t in SortedPairsByMemberValue(i, "name") do
+                searchBar:SetText("") -- Reseta o texto ao trocar de categoria
+
+                for _, tData in SortedPairsByMemberValue(i, "name") do
                     spawnmenu.CreateContentIcon("item", self.PropPanel, {
-                        nicename = (t.GetName and t:GetName()) or t.name,
-                        spawnname = t.uniqueID,
+                        nicename = (tData.GetName and tData:GetName()) or tData.name,
+                        spawnname = tData.uniqueID,
                     })
                 end
+
+                -- keep a reference to the currently active panel on "p" so the
+                -- search bar (OnValueChange below) can actually find it
+                p.PropPanel = self.PropPanel
 
                 p:SwitchPanel(self.PropPanel)
             end
         end
 
-        local FirstNode = t:Root():GetChildNode(0)
+        -- 2. LÓGICA DE FILTRAGEM INTEGRADA (RefreshResults)
+        searchBar.OnValueChange = function(textentry, strText)
+            local query = string.lower(strText)
+            
+            -- Se apagar a barra de pesquisa, força um clique na categoria para recarregar tudo normal
+            if (query == "") then
+                -- CORREÇÃO: Usa a função correta da DTree para pegar o nó selecionado, ou o primeiro nó da lista
+                local activeNode = t:GetSelectedItem() or t:Root():GetChildNode(0)
+                if IsValid(activeNode) then activeNode:InternalDoClick() end
+                return
+            end
 
+            if (!IsValid(p.PropPanel)) then return end
+            
+            -- Limpa os ícones anteriores da tela (Igual ao self.Canvas:Clear() do seu exemplo)
+            p.PropPanel:Clear()
+
+            -- Varre o cache de itens verificando se o nome contém o texto digitado
+            for itemName, itemData in pairs(itemSearchCache) do
+                if (string.find(itemName, query, 1, true)) then
+                    -- Recria os novos ícones encontrados diretamente na tela (Igual ao self:CreateIcon)
+                    spawnmenu.CreateContentIcon("item", p.PropPanel, {
+                        nicename = itemData.nicename,
+                        spawnname = itemData.spawnname,
+                    })
+                end
+            end
+        end
+
+        local FirstNode = t:Root():GetChildNode(0)
         if IsValid(FirstNode) then
             FirstNode:InternalDoClick()
         end
@@ -113,17 +173,25 @@ else
         return p
     end, "icon16/cog_add.png", 201)
 
+    -- 3. INTERCEPTADOR NATIVO DO TAMANHO DO ÍCONE
     spawnmenu.AddContentType("item", function(p, data)
         local n = data.nicename
         local u = data.spawnname
+        
         local icon = vgui.Create("SpawnIcon", p)
-        icon:SetWide(64)
-        icon:SetTall(64)
+        icon:SetWide(TAMANHO_CUSTOM)
+        icon:SetTall(TAMANHO_CUSTOM)
         icon:InvalidateLayout(true)
+        
         local t = ix.item.list
         local i = t[u]
         icon:SetModel((i.GetModel and i:GetModel()) or i.model)
         icon:SetTooltip(n)
+
+        if (IsValid(p) and p.SetSpaceX) then
+            p:SetSpaceX(8)
+            p:SetSpaceY(8)
+        end
 
         icon.OnMousePressed = function(this, code)
             surface.PlaySound("ui/buttonclickrelease.wav")
