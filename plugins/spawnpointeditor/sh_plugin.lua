@@ -1,7 +1,7 @@
 local PLUGIN = PLUGIN
 
 PLUGIN.name = "Spawn Point Editor (GUI)"
-PLUGIN.author = "you"
+PLUGIN.author = "Luiz Feliphi"
 PLUGIN.desc = "Adiciona um painel gráfico (F-menu) para gerenciar todos os pontos de spawn " ..
 	"(caixas, stashes escondidos, radiação, anomalias, eventos e containers cíclicos) " ..
 	"sem precisar digitar comandos manualmente. O painel apenas envia os mesmos comandos " ..

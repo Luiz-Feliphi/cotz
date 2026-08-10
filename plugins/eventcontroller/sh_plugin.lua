@@ -18,6 +18,21 @@ PLUGIN.saferadius = 1500
 
 PLUGIN.spawnrate = 30
 
+-- Controle de "aguarda limpar antes de spawnar de novo" -- POR PONTO
+-- individual de evento (não é uma contagem global). A cada
+-- eventNPCCheckInterval segundos, cada ponto tem seus NPCs checados
+-- separadamente (inclui os spawnados de forma forçada via /eventforce,
+-- /eventpopulate, /eventmenu, já que todos passam por spawnEvent com o
+-- eventpoint certo). Se aquele ponto ainda tiver 1+ NPC vivo, ele fica
+-- bloqueado até o próximo check. Se zerou, aguarda mais
+-- eventSpawnGraceTime segundos de "graça" antes de liberar o próximo
+-- spawn automático NAQUELE ponto -- os outros pontos não são afetados.
+PLUGIN.eventNPCCheckInterval = 300 -- 5 minutos
+PLUGIN.eventSpawnGraceTime = 300 -- 5 minutos
+PLUGIN.spawnedNPCsByPoint = PLUGIN.spawnedNPCsByPoint or {} -- [eventpoint] = {[entity]=true, ...}
+PLUGIN.pointGateState = PLUGIN.pointGateState or {} -- [eventpoint] = {allowedTime = nil/timestamp}
+PLUGIN.nextEventCheck = PLUGIN.nextEventCheck or 0
+
 -- Categorias do menu nativo de NPCs (list.Get("NPC"), o mesmo menu que
 -- aparece no F4 -> NPCs) que serão exibidas na aba "NPCs Personalizados"
 -- do /eventmenu. Adicione/remova nomes de categoria aqui se seus NPCs
@@ -43,7 +58,17 @@ ix.config.Add("eventControllerThreshold", 70, "How many mutants should the contr
 
 if SERVER then
 	local spawntime = 1
-	local populate = true
+
+	-- ANTES: "local populate = true" resetava pra true toda vez que o
+	-- arquivo era recarregado (hot-reload), fazendo a leva inicial rodar
+	-- de novo a cada reload -- e como o LoadData() também zerava o
+	-- rastreamento de NPCs (ver abaixo), o sistema "esquecia" dos bandits
+	-- já vivos e empilhava mais em cima, sem limite.
+	--
+	-- Agora usamos um campo em PLUGIN (não uma local), que sobrevive a
+	-- reloads (PLUGIN é a mesma tabela global reaproveitada pelo Helix).
+	-- Só roda a leva inicial se NUNCA rodou nessa sessão do servidor.
+	PLUGIN.hasPopulated = PLUGIN.hasPopulated or false
 	
 	function PLUGIN:IsClear(position)
 		
@@ -92,6 +117,13 @@ if SERVER then
 					newNPC:SetPos(position)
 					newNPC:Spawn()
 					newNPC:DropToFloor()
+
+					-- Rastreia esse NPC ligado ao PONTO específico onde ele
+					-- nasceu (não a um contador global). Cobre TODOS os
+					-- caminhos de spawn (automático, /eventforce,
+					-- /eventpopulate, /eventmenu), pois todos passam por
+					-- essa função.
+					self:TrackNPCForPoint(eventpoint, newNPC)
 				end
 			end
 		end
@@ -140,15 +172,111 @@ if SERVER then
 	function PLUGIN:setSpawnTime(time)
 		spawntime = time
 	end
+
+	-- Vincula um NPC a um eventpoint específico (a mesma tabela usada em
+	-- self.eventpoints[mapa], ou uma tabela avulsa no caso de spawns
+	-- manuais via /eventmenu -- nesse caso ela só existe pra essa
+	-- rodada e não interfere no gate dos pontos "de verdade").
+	function PLUGIN:TrackNPCForPoint(eventpoint, npc)
+		if not IsValid(npc) then return end
+
+		self.spawnedNPCsByPoint[eventpoint] = self.spawnedNPCsByPoint[eventpoint] or {}
+		self.spawnedNPCsByPoint[eventpoint][npc] = true
+
+		-- Bloqueia esse ponto JÁ, assim que um NPC nasce nele -- não espera
+		-- o próximo check periódico (que podia demorar até 5 min), senão o
+		-- mesmo ponto continuava "elegível" e levava spawn de novo a cada
+		-- 30s (ciclo do Think) até o check seguinte perceber que já tinha
+		-- NPC vivo ali.
+		local state = self:GetPointGateState(eventpoint)
+		state.allowedTime = nil
+
+		print("[EventController] Rastreando NPC '" .. npc:GetClass() .. "' no ponto '" ..
+			tostring(eventpoint[2]) .. "'. Total vivo nesse ponto agora: " ..
+			table.Count(self.spawnedNPCsByPoint[eventpoint]))
+
+		npc:CallOnRemove("ixEventController_UntrackNPC", function()
+			local list = self.spawnedNPCsByPoint[eventpoint]
+			if list then list[npc] = nil end
+		end)
+	end
+
+	-- Limpa NPCs mortos/removidos da lista de UM ponto e devolve quantos
+	-- ainda estão vivos ali.
+	function PLUGIN:GetTrackedNPCCountForPoint(eventpoint)
+		local list = self.spawnedNPCsByPoint[eventpoint]
+		if not list then return 0 end
+
+		for npc in pairs(list) do
+			if not IsValid(npc) then
+				list[npc] = nil
+			end
+		end
+
+		return table.Count(list)
+	end
+
+	-- Estado do gate (liberado/bloqueado) de UM ponto específico.
+	function PLUGIN:GetPointGateState(eventpoint)
+		local state = self.pointGateState[eventpoint]
+
+		if not state then
+			state = { allowedTime = nil }
+			self.pointGateState[eventpoint] = state
+		end
+
+		return state
+	end
+
+	-- Roda a cada eventNPCCheckInterval segundos (5 min por padrão) e
+	-- atualiza o gate de CADA ponto individualmente: se aquele ponto
+	-- ainda tem NPC vivo, fica bloqueado e tenta de novo no próximo
+	-- check; se zerou, começa a contar o período de graça daquele ponto
+	-- específico antes de liberar o próximo spawn ali.
+	function PLUGIN:UpdateEventSpawnGate()
+		if CurTime() < self.nextEventCheck then return end
+		self.nextEventCheck = CurTime() + self.eventNPCCheckInterval
+
+		local points = self.eventpoints[game.GetMap()]
+		if not points then return end
+
+		--print("[EventController] --- Check periódico dos pontos ---")
+
+		for _, eventpoint in pairs(points) do
+			local state = self:GetPointGateState(eventpoint)
+			local count = self:GetTrackedNPCCountForPoint(eventpoint)
+
+			if count >= 1 then
+				state.allowedTime = nil
+				--print("[EventController] Ponto '" .. tostring(eventpoint[2]) .. "': " .. count .. " NPC(s) vivo(s) -- continua bloqueado.")
+			elseif not state.allowedTime then
+				state.allowedTime = CurTime() + self.eventSpawnGraceTime
+				--print("[EventController] Ponto '" .. tostring(eventpoint[2]) .. "': zerou -- libera em " .. self.eventSpawnGraceTime .. "s.")
+			else
+				continue-- print("[EventController] Ponto '" .. tostring(eventpoint[2]) .. "': já estava liberado/em graça, sem mudança.")
+			end
+		end
+	end
 	
 	function PLUGIN:setPopulate(bool)
-		populate = bool
+		self.hasPopulated = not bool
 	end
 
 	function PLUGIN:LoadData()
 		self.eventpoints = self:GetData() or {}
 
 		self.eventpoints[game.GetMap()] = self.eventpoints[game.GetMap()] or {}
+
+		self.nextEventCheck = 0 -- força o primeiro check já no próximo Think
+
+		-- ANTES isso zerava incondicionalmente, apagando a memória de quais
+		-- NPCs já estavam vivos toda vez que o plugin recarregava (mesmo
+		-- com eles ainda vivos no mapa) -- fazendo o sistema achar que os
+		-- pontos estavam vazios e liberando spawn em cima de spawn. Agora só
+		-- inicializa se realmente ainda não existir (primeiro load de
+		-- verdade), preservando o rastreamento em reloads.
+		self.spawnedNPCsByPoint = self.spawnedNPCsByPoint or {}
+		self.pointGateState = self.pointGateState or {}
 	end
 
 	function PLUGIN:SaveData()
@@ -191,15 +319,20 @@ if SERVER then
 	function PLUGIN:Think()
 		if table.IsEmpty(self.eventpoints) then return end
 
-		if populate then
+		if not self.hasPopulated then
+			print("[EventController] Rodando leva de populate inicial (" .. self.populateAmount .. " eventos, NÃO passa pelo gate de NPCs).")
+
 			for i = 1, self.populateAmount do
 				local eventpoint = table.Random(self.eventpoints[game.GetMap()])
 
-				-- Antes, um "return" aqui saía da função inteira sem nunca
-				-- zerar "populate", deixando ele preso em true (o Think
-				-- ficava tentando de novo a cada tick, do zero). Agora só
-				-- pulamos essa tentativa e seguimos as outras.
 				if (!eventpoint) then continue end
+
+				-- Segurança extra: mesmo sendo a leva inicial, não empilha
+				-- em cima de um ponto que já tem NPC vivo rastreado (só
+				-- importa se essa leva rodar de novo por algum motivo
+				-- inesperado; numa leva inicial de verdade, tudo começa
+				-- vazio mesmo).
+				if self:GetTrackedNPCCountForPoint(eventpoint) >= 1 then continue end
 
 				local spawn = self:GetEventDefForPoint(eventpoint)
 				if (!spawn) then continue end
@@ -207,23 +340,40 @@ if SERVER then
 				self:spawnEvent(eventpoint,spawn)
 			end
 			
-			populate = false
+			self.hasPopulated = true
 		end
-		
+
+		self:UpdateEventSpawnGate()
+
 		if spawntime > CurTime() then return end
 		spawntime = CurTime() + self.spawnrate
 
 		if( self:GetNumMutants() > ix.config.Get("eventControllerThreshold",35)) then return end
 
-		local eventpoint = table.Random(self.eventpoints[game.GetMap()])
-		if (!eventpoint) then
-			return
+		-- Só considera pontos cujo gate individual já está liberado (NPCs
+		-- do evento anterior daquele ponto morreram + período de graça já
+		-- passou). Spawns forçados (/eventforce, /eventpopulate,
+		-- /eventmenu) continuam funcionando sempre em qualquer ponto,
+		-- pois chamam spawnEvent direto, sem passar por esse filtro.
+		local eligiblePoints = {}
+
+		for _, point in pairs(self.eventpoints[game.GetMap()]) do
+			local state = self:GetPointGateState(point)
+
+			if state.allowedTime and CurTime() >= state.allowedTime then
+				eligiblePoints[#eligiblePoints + 1] = point
+			end
 		end
+
+		if #eligiblePoints == 0 then return end
+
+		local eventpoint = table.Random(eligiblePoints)
 		if( !self:IsClear(eventpoint[1]) ) then return end
 
 		local spawn = self:GetEventDefForPoint(eventpoint)
 		if (!spawn) then return end
 
+		print("[EventController] Spawn AUTOMÁTICO liberado no ponto '" .. eventpoint[2] .. "'.")
 		self:spawnEvent(eventpoint, spawn)
 		
 		if ix.progression.IsCompleted("muteItemDelivery_Broadcast") then
@@ -648,6 +798,54 @@ else
 	end)
 end
 
+ix.command.Add("eventgatestatus", {
+	adminOnly = true,
+	OnRun = function(self, client)
+		local points = PLUGIN.eventpoints[game.GetMap()]
+
+		if table.IsEmpty(points or {}) then
+			client:Notify("Nenhum ponto de evento neste mapa ainda.")
+			return
+		end
+
+		local trace = client:GetEyeTraceNoCursor()
+		local hitpos = trace.HitPos + trace.HitNormal*5
+
+		-- Acha o ponto mais próximo de onde o admin está mirando, já que
+		-- cada ponto agora tem seu próprio gate individual.
+		local closest, closestDist
+		for _, point in pairs(points) do
+			local dist = point[1]:Distance(hitpos)
+			if not closestDist or dist < closestDist then
+				closest = point
+				closestDist = dist
+			end
+		end
+
+		if not closest then
+			client:Notify("Nenhum ponto encontrado.")
+			return
+		end
+
+		local count = PLUGIN:GetTrackedNPCCountForPoint(closest)
+		local state = PLUGIN:GetPointGateState(closest)
+		local nextCheckIn = math.max(0, math.Round(PLUGIN.nextEventCheck - CurTime()))
+
+		client:ChatPrint("[EventController] Ponto mais próximo: '" .. closest[2] .. "' (a " .. math.Round(closestDist) .. " unidades)")
+		client:ChatPrint("[EventController] NPCs vivos nesse ponto: " .. count)
+		client:ChatPrint("[EventController] Próximo check de TODOS os pontos em: " .. nextCheckIn .. "s")
+
+		if not state.allowedTime then
+			client:ChatPrint("[EventController] Spawn automático nesse ponto: BLOQUEADO (aguardando NPCs zerarem).")
+		elseif CurTime() < state.allowedTime then
+			local remaining = math.Round(state.allowedTime - CurTime())
+			client:ChatPrint("[EventController] Spawn automático nesse ponto: em período de graça, libera em " .. remaining .. "s.")
+		else
+			client:ChatPrint("[EventController] Spawn automático nesse ponto: LIBERADO agora.")
+		end
+	end
+})
+
 ix.command.Add("eventadd", {
 	superAdminOnly = true,
 	arguments = {
@@ -695,6 +893,12 @@ ix.command.Add("eventremove", {
 			local distance = v[1]:Distance( hitpos )
 			if distance <= tonumber(range) then
 				PLUGIN.eventpoints[game.GetMap()][k] = nil
+
+				-- Limpa o rastreamento de NPCs/gate desse ponto pra não
+				-- ficar lixo acumulando nas tabelas.
+				PLUGIN.spawnedNPCsByPoint[v] = nil
+				PLUGIN.pointGateState[v] = nil
+
 				mt = mt + 1
 			end
 		end
@@ -801,4 +1005,4 @@ ix.command.Add("eventpopulate", {
 		--	client:ChatPrint("Amount must be a number.")
 		--end
 	end
-})	
+})
